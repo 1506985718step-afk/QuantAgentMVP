@@ -1,0 +1,5 @@
+{
+  "name": "QuantAgent MVP",
+  "description": "一个半自动化的量化交易仪表板，具有人工审批、事件溯源可视化和风险管理控制功能。",
+  "requestFramePermissions": []
+}

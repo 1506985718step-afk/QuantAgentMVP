@@ -16,9 +16,9 @@ class StrategyAgent:
         self.cooldowns: Dict[str, datetime] = {}
         self.last_scan_time = None
 
-    def run_cycle(self, market_snapshot: Any, market_data_map: Dict[str, Any], config: Any) -> List[TradeIntent]:
+    async def run_cycle(self, market_snapshot: Any, market_data_map: Dict[str, Any], config: Any) -> List[TradeIntent]:
         """
-        Scan watchlist and return new intents.
+        Scan watchlist and return new intents (Async).
         """
         intents = []
         now = datetime.now()
@@ -47,7 +47,7 @@ class StrategyAgent:
                 continue # Don't buy dropping knives
 
             # 2. LLM Analysis
-            analysis = self.llm.analyze(
+            analysis = await self.llm.analyze(
                 symbol=symbol,
                 name=name,
                 price=data['price'],

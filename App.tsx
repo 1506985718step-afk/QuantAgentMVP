@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import Header from './components/Header';
 import MarketStatus from './components/MarketStatus';
@@ -10,12 +11,14 @@ import BehaviorAnalytics from './components/BehaviorAnalytics';
 import PositionHealth from './components/PositionHealth';
 import KLineChart from './components/KLineChart';
 import OrderList from './components/OrderList';
+import AIChatPanel from './components/AIChatPanel';
+import BacktestControls from './components/BacktestControls'; // New Import
 
 import { backend as mockBackend } from './services/MockBackend'; 
 import { backend as apiBackend } from './services/APIBackend';
 import { config, setBackendMode } from './services/config';
 import { dataProvider } from './services/DataProvider';
-import { Loader2, Activity, PieChart, BarChart2, LayoutDashboard, Server, MonitorSmartphone, WifiOff } from 'lucide-react';
+import { Loader2, Activity, PieChart, BarChart2, LayoutDashboard, Server, MonitorSmartphone, WifiOff, MessageSquareText } from 'lucide-react';
 import { BarData } from './services/historicalData';
 
 const App: React.FC = () => {
@@ -27,7 +30,7 @@ const App: React.FC = () => {
 
     const [state, setState] = useState(activeBackend.getState());
     const [isLoading, setIsLoading] = useState<boolean>(true);
-    const [activeTab, setActiveTab] = useState<'live' | 'analysis'>('live');
+    const [activeTab, setActiveTab] = useState<'live' | 'analysis' | 'advisor'>('live');
     const [chartSymbol, setChartSymbol] = useState('000001'); 
     const [chartData, setChartData] = useState<BarData[]>([]);
 
@@ -85,6 +88,12 @@ const App: React.FC = () => {
         }
     };
 
+    // Simulation Handlers (Only valid for Mock Backend)
+    const handleSimPlay = () => !useRealBackend && (mockBackend as any).togglePlayback();
+    const handleSimPause = () => !useRealBackend && (mockBackend as any).togglePlayback();
+    const handleSimSpeed = (s: number) => !useRealBackend && (mockBackend as any).setSpeed(s);
+    const handleSimStep = () => !useRealBackend && (mockBackend as any).stepForward();
+
     if (isLoading) {
         return (
             <div className="flex h-screen items-center justify-center bg-slate-950 text-emerald-500">
@@ -96,13 +105,12 @@ const App: React.FC = () => {
         );
     }
 
-    const { market, account, positions, intents, events, audit, metrics, orders, isConnected } = state as any;
+    const { market, account, positions, intents, events, audit, metrics, orders, isConnected, simulation } = state as any;
     
     // Check if we are in real mode but disconnected
     const showConnectionError = useRealBackend && isConnected === false;
 
     // Filter intents: Show PENDING (from Python) or PENDING_APPROVAL (from Mock)
-    // Map Python 'PENDING' status to be visible in UI
     const pendingIntents = intents?.filter((i: any) => i.status === 'PENDING_APPROVAL' || i.status === 'PENDING') || [];
 
     return (
@@ -128,9 +136,20 @@ const App: React.FC = () => {
                     }`}
                 >
                     {useRealBackend ? <Server className="h-4 w-4" /> : <MonitorSmartphone className="h-4 w-4" />}
-                    {useRealBackend ? 'Mode: Python API' : 'Mode: Browser Mock'}
+                    {useRealBackend ? '模式: Python 实盘' : '模式: AI 策略训练'}
                 </button>
             </div>
+            
+            {/* Simulation Controls (Visible only in Mock Mode) */}
+            {!useRealBackend && simulation && (
+                <BacktestControls 
+                    status={simulation}
+                    onPlay={handleSimPlay}
+                    onPause={handleSimPause}
+                    onSpeedChange={handleSimSpeed}
+                    onNextStep={handleSimStep}
+                />
+            )}
             
             <main className={`container mx-auto mt-8 max-w-[1400px] px-4 sm:px-6 space-y-8 ${showConnectionError ? 'opacity-50 pointer-events-none' : ''}`}>
                 
@@ -159,7 +178,7 @@ const App: React.FC = () => {
                             }`}
                         >
                             <LayoutDashboard className="h-4 w-4" />
-                            实盘监控
+                            {useRealBackend ? '实盘监控' : '训练看板'}
                         </button>
                         <button
                             onClick={() => setActiveTab('analysis')}
@@ -170,7 +189,18 @@ const App: React.FC = () => {
                             }`}
                         >
                             <PieChart className="h-4 w-4" />
-                            盘后复盘 & 审计
+                            复盘分析
+                        </button>
+                        <button
+                            onClick={() => setActiveTab('advisor')}
+                            className={`flex items-center gap-2 px-6 py-2.5 text-sm font-medium rounded-md transition-all duration-200 ${
+                                activeTab === 'advisor' 
+                                ? 'bg-slate-800 text-indigo-400 shadow-sm ring-1 ring-slate-700' 
+                                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+                            }`}
+                        >
+                            <MessageSquareText className="h-4 w-4" />
+                            AI 顾问
                         </button>
                     </div>
                     
@@ -181,12 +211,13 @@ const App: React.FC = () => {
                             title="Force Strategy Scan"
                         >
                             <Activity className="h-3 w-3" />
-                            Trigger Scan
+                            扫描市场
                         </button>
                     )}
                 </div>
 
-                {activeTab === 'live' ? (
+                {/* --- TAB CONTENT: LIVE --- */}
+                {activeTab === 'live' && (
                     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
                         {/* Market Overview */}
                         <MarketStatus data={market || {}} />
@@ -257,9 +288,6 @@ const App: React.FC = () => {
                                             </div>
                                             <p className="font-medium">暂时没有来自 StrategyAgent 的信号</p>
                                             <p className="text-xs mt-1 opacity-60">LLM 正在实时扫描市场形态...</p>
-                                            {useRealBackend && (
-                                                <p className="text-[10px] mt-4 text-indigo-400">当前连接: Python Real Backend</p>
-                                            )}
                                         </div>
                                     ) : (
                                         <div className="grid gap-4 md:grid-cols-2">
@@ -289,7 +317,10 @@ const App: React.FC = () => {
                             </div>
                         </div>
                     </div>
-                ) : (
+                )}
+
+                {/* --- TAB CONTENT: ANALYSIS --- */}
+                {activeTab === 'analysis' && (
                     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
                          <section>
                             <h2 className="mb-4 text-xl font-bold text-slate-100">AI 审计报告</h2>
@@ -301,6 +332,20 @@ const App: React.FC = () => {
                         </section>
                     </div>
                 )}
+
+                {/* --- TAB CONTENT: AI ADVISOR --- */}
+                {activeTab === 'advisor' && (
+                    <div className="mx-auto max-w-4xl animate-in fade-in slide-in-from-bottom-4 duration-500">
+                        <section>
+                             <div className="mb-4">
+                                <h2 className="text-xl font-bold text-slate-100">DeepSeek 投资顾问</h2>
+                                <p className="text-sm text-slate-500">您的专属量化专家，提供策略分析与心理建设支持</p>
+                             </div>
+                            <AIChatPanel />
+                        </section>
+                    </div>
+                )}
+
             </main>
         </div>
     );

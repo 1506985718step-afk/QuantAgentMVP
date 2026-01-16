@@ -1,6 +1,9 @@
 from typing import List, Dict, Any
 from datetime import datetime
 import uuid
+import json
+import os
+import asyncio
 
 from .contracts import (
     AccountSummary, Position, TradeIntent, SystemEvent, MarketSnapshot,
@@ -14,11 +17,13 @@ from ..services.sina_data import sina_provider
 from ..agents.strategy_agent import StrategyAgent
 from ..services.llm_service import LLMService
 
+DATA_FILE = "data/state.json"
+
 class TradingSystem:
     def __init__(self):
         # 1. State Initialization
         self.account = AccountSummary(
-            total_equity=100000.0, # Increased for Python backend demo
+            total_equity=100000.0, 
             available_cash=100000.0,
             market_value=0.0,
             day_pnl=0.0,
@@ -34,7 +39,7 @@ class TradingSystem:
         self.engine = ExecutionEngine()
         self.exit_policy = ExitPolicy()
         self.strategy_agent = StrategyAgent()
-        self.llm_service = LLMService() # Integrated LLM Service
+        self.llm_service = LLMService() 
         
         # 3. Market State
         self.market_snapshot = MarketSnapshot(
@@ -58,11 +63,12 @@ class TradingSystem:
             active_config=self.strategy_config
         )
         
+        # 6. Load State
+        self._load_from_disk()
         self._log(EventType.MARKET_SNAPSHOT, "SYSTEM", Decision.INFO, "System Initialized (Python Backend)")
 
     def get_state(self) -> Dict[str, Any]:
         """Return full UI state"""
-        # Note: We don't sync on every read to avoid API limits, assuming sync happens on 'tick'
         return {
             "account": self.account.model_dump(),
             "positions": [p.model_dump() for p in self.positions],
@@ -74,44 +80,40 @@ class TradingSystem:
             "orders": [] 
         }
 
-    def tick(self):
+    async def tick(self):
         """
-        Main Loop Cycle:
+        Main Loop Cycle (Async):
         1. Sync Market Data
         2. Run Strategy Agent (Generate Signals)
         3. Run Exit Policy (Generate Sells)
         """
         # 1. Sync Data
-        realtime_data = self._sync_market_data()
+        realtime_data = await self._sync_market_data()
         
         # 2. Strategy Scan
-        new_intents = self.strategy_agent.run_cycle(self.market_snapshot, realtime_data, self.strategy_config)
+        new_intents = await self.strategy_agent.run_cycle(self.market_snapshot, realtime_data, self.strategy_config)
         
+        has_updates = False
         for intent in new_intents:
-            # Check for duplicates
             if any(i.symbol == intent.symbol and i.side == intent.side and i.status == OrderStatus.PENDING for i in self.intents):
                 continue
                 
-            # Guard Check (Pre-check)
             receipt = self.guard.check(intent, self.account.filled_buys_today)
             if receipt.decision == Decision.ALLOW:
-                # Add to Intents List as PENDING (Waiting for human approval)
                 intent.status = OrderStatus.PENDING 
                 self.intents.insert(0, intent)
+                has_updates = True
                 
                 self._log(EventType.SIGNAL_EMITTED, AgentType.STRATEGY, Decision.INFO, 
                           f"Signal: {intent.symbol} {intent.reason}", symbol=intent.symbol)
-
-        # 3. Exit Policy
-        # (Already implemented in mock, needs integration here if we want auto-exits)
-        # For now, we skip auto-exit generation to keep it simple, or we can iterate positions.
         
+        if has_updates:
+            self._save_to_disk()
+
         return {"status": "ticked", "signals": len(new_intents)}
 
     def submit_intent(self, intent: TradeIntent) -> bool:
         """Handle human approval"""
-        
-        # 1. Guard Check
         receipt = self.guard.check(intent, self.account.filled_buys_today)
         
         if receipt.decision == Decision.BLOCK:
@@ -119,8 +121,7 @@ class TradingSystem:
                       f"Guard Blocked: {receipt.reason_text}", symbol=intent.symbol)
             return False
 
-        # 2. Update status and move to execution
-        # Find local object if exists to update status in place
+        # Update status
         existing = next((i for i in self.intents if i.intent_id == intent.intent_id), None)
         if existing:
             existing.status = OrderStatus.SUBMITTED
@@ -131,8 +132,8 @@ class TradingSystem:
         self._log(EventType.HUMAN_APPROVED, AgentType.EXECUTION, Decision.ALLOW, 
                   f"Intent Accepted: {intent.side} {intent.symbol}", symbol=intent.symbol)
         
-        # 3. Execute immediately
         self._execute_trade(intent)
+        self._save_to_disk()
         return True
 
     def cancel_order(self, intent_id: str):
@@ -145,30 +146,29 @@ class TradingSystem:
         
         if found:
             self._log(EventType.ORDER_REJECTED, AgentType.BROKER, Decision.INFO, "Order Cancelled by User", symbol=None)
+            self._save_to_disk()
 
     def set_equity(self, amount: float):
         old = self.account.total_equity
         self.account.total_equity = amount
         self.account.available_cash = amount - self.account.market_value
         self._log(EventType.DAILY_REPORT, AgentType.SYSTEM, Decision.INFO, f"Equity Adjusted: {old} -> {amount}")
+        self._save_to_disk()
 
-    def generate_audit(self) -> Dict[str, Any]:
+    async def generate_audit(self) -> Dict[str, Any]:
         """Trigger AI Audit Generation"""
         self._log(EventType.DAILY_REPORT, AgentType.AUDIT, Decision.INFO, "Starting AI Audit...")
         
-        # Prepare Data
         filled_orders = [i.model_dump() for i in self.intents if i.status == OrderStatus.FILLED]
         recent_events = [e.model_dump() for e in self.events if e.ts.startswith(datetime.now().strftime("%Y-%m-%d"))]
         
-        # Call LLM
-        result = self.llm_service.audit_daily_performance(
+        result = await self.llm_service.audit_daily_performance(
             date=datetime.now().strftime("%Y-%m-%d"),
             account=self.account.model_dump(),
             trades=filled_orders,
             events=recent_events
         )
         
-        # Update State
         self.audit_report = AuditReport(
             date=datetime.now().strftime("%Y-%m-%d"),
             score=result.get("score", 0),
@@ -177,6 +177,7 @@ class TradingSystem:
             ai_suggestions=result.get("ai_suggestions", []),
             active_config=self.strategy_config
         )
+        self._save_to_disk()
         
         return self.audit_report.model_dump()
 
@@ -205,21 +206,20 @@ class TradingSystem:
         self._log(EventType.ORDER_FILLED, AgentType.BROKER, Decision.EXECUTE, 
                   f"Filled {intent.side} {intent.qty} @ {fill_price}", symbol=intent.symbol)
 
-    def _sync_market_data(self) -> Dict[str, Any]:
+    async def _sync_market_data(self) -> Dict[str, Any]:
         """Fetch real prices"""
         symbols = [item['symbol'] for item in self.strategy_agent.watchlist]
         for p in self.positions:
             if p.symbol not in symbols:
                 symbols.append(p.symbol)
                 
-        data = sina_provider.get_realtime_data(symbols)
+        data = await sina_provider.get_realtime_data(symbols)
         
         if '000001' in data:
             sz_data = data['000001']
             self.market_snapshot.index_price = sz_data['price']
             self.market_snapshot.change_pct = sz_data['change_pct']
         
-        # Update Positions PnL
         total_mkt_val = 0
         total_pnl = 0
         
@@ -255,5 +255,42 @@ class TradingSystem:
             severity=Severity.INFO
         )
         self.events.append(evt)
+
+    # --- Persistence Layer ---
+    def _save_to_disk(self):
+        try:
+            os.makedirs("data", exist_ok=True)
+            state = {
+                "account": self.account.model_dump(),
+                "positions": [p.model_dump() for p in self.positions],
+                "intents": [i.model_dump() for i in self.intents],
+                # Save last 100 events to prevent huge files
+                "events": [e.model_dump() for e in self.events[-100:]] 
+            }
+            with open(DATA_FILE, "w", encoding='utf-8') as f:
+                json.dump(state, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"Failed to save state: {e}")
+
+    def _load_from_disk(self):
+        if not os.path.exists(DATA_FILE):
+            return
+        
+        try:
+            with open(DATA_FILE, "r", encoding='utf-8') as f:
+                data = json.load(f)
+                
+            if "account" in data:
+                self.account = AccountSummary(**data["account"])
+            if "positions" in data:
+                self.positions = [Position(**p) for p in data["positions"]]
+            if "intents" in data:
+                self.intents = [TradeIntent(**i) for i in data["intents"]]
+            if "events" in data:
+                self.events = [SystemEvent(**e) for e in data["events"]]
+                
+            print(f"State loaded from {DATA_FILE}")
+        except Exception as e:
+            print(f"Failed to load state: {e}")
 
 trading_system = TradingSystem()

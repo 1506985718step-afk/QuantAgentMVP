@@ -1,21 +1,23 @@
-import requests
+import httpx
 from typing import Dict, Any, List
 
 class SinaDataProvider:
     """
-    Fetch Real-Time A-Share Data from Sina Finance Interface.
+    Fetch Real-Time A-Share Data from Sina Finance Interface (Async).
     URL Format: http://hq.sinajs.cn/list=sh600519,sz000001
     """
     
     BASE_URL = "http://hq.sinajs.cn/list="
     
-    def get_realtime_data(self, symbols: List[str]) -> Dict[str, Any]:
+    async def get_realtime_data(self, symbols: List[str]) -> Dict[str, Any]:
         """
         Input: ['000001', '600519'] (Raw codes)
         Output: Dictionary of market data
         """
+        if not symbols:
+            return {}
+
         # 1. Format codes for Sina (sh=Shanghai, sz=Shenzhen)
-        # Simple heuristic: 6 starts = sh, others = sz (simplified)
         sina_codes = []
         mapping = {}
         
@@ -34,19 +36,27 @@ class SinaDataProvider:
         }
 
         try:
-            resp = requests.get(url, headers=headers, timeout=2.0)
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                resp = await client.get(url, headers=headers)
+                
             if resp.status_code != 200:
                 print(f"Sina API Error: {resp.status_code}")
                 return {}
+            
+            # Use GBK for Sina decoding, fallback to utf-8 if needed, but requests auto-handles encoding mostly. 
+            # HTTPX might need explicit encoding guess or manual decode.
+            # Sina usually returns GBK.
+            try:
+                content = resp.content.decode('gbk')
+            except:
+                content = resp.text
                 
             results = {}
-            content = resp.text # e.g., var hq_str_sh600519="贵州茅台,1700.00,..."
-            
             lines = content.strip().split("\n")
             for line in lines:
                 if not line: continue
                 
-                # Parse: var hq_str_sh600519="Data..."
+                # Parse: var hq_str_sh600519="贵州茅台,1700.00,..."
                 try:
                     left, right = line.split('=')
                     code_with_prefix = left.split('_')[-1] # sh600519
@@ -90,7 +100,7 @@ class SinaDataProvider:
                         "time": f"{date} {time}"
                     }
                 except Exception as e:
-                    print(f"Parse error for line: {line[:20]}... {e}")
+                    # print(f"Parse error for line: {line[:20]}... {e}")
                     continue
             
             return results

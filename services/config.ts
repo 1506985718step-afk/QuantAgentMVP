@@ -1,12 +1,16 @@
+
 // Configuration for Backend Selection
 
 // Check if we are running in a mode that expects a Python backend
 // In a real build, this might be controlled by .env variables (VITE_USE_REAL_BACKEND)
-const USE_REAL_BACKEND_DEFAULT = (import.meta as any).env?.VITE_USE_REAL_BACKEND === 'true';
+const USE_REAL_BACKEND_DEFAULT = true; // Default to true for production build
 
 export const config = {
     useRealBackend: USE_REAL_BACKEND_DEFAULT,
-    apiBaseUrl: 'http://localhost:8000/api',
+    // IMPORTANT: In production (behind Nginx), we use relative path '/api'.
+    // Nginx will forward '/api' to 'http://localhost:8000/api'.
+    // This allows access from mobile without CORS issues or hardcoding IP.
+    apiBaseUrl: '/api',
     
     // Feature Flags
     enableGemini: true,
@@ -15,7 +19,6 @@ export const config = {
 
 export const setBackendMode = (useReal: boolean) => {
     config.useRealBackend = useReal;
-    // Persist preference if needed
     localStorage.setItem('use_real_backend', String(useReal));
 };
 

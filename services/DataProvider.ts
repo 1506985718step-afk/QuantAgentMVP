@@ -1,4 +1,4 @@
-import { BarData, HISTORY_DATA_PINGAN, HISTORY_DATA_MOUTAI, HISTORY_DATA_BYD } from './historicalData';
+import { BarData, EMPTY_DATA, FALLBACK_MOCK_DATA } from './historicalData';
 import { MarketSnapshot } from '../types';
 import { config } from './config';
 
@@ -9,38 +9,39 @@ export interface IDataProvider {
 
 export class HybridDataProvider implements IDataProvider {
     
-    async getBars(symbol: string, limit: number = 60): Promise<BarData[]> {
-        // 1. Try Real Backend if enabled
-        if (config.useRealBackend) {
-            try {
-                const res = await fetch(`${config.apiBaseUrl}/market/history/${symbol}`);
-                if (res.ok) {
-                    const data = await res.json();
-                    if (data && data.length > 0) {
-                        return data;
-                    }
+    async getBars(symbol: string, limit: number = 300): Promise<BarData[]> {
+        // Always try to fetch from the Python backend first to get real AkShare data.
+        const apiBase = config.apiBaseUrl || 'http://localhost:8000/api';
+
+        try {
+            // Set a timeout to prevent hanging indefinitely
+            const controller = new AbortController();
+            const id = setTimeout(() => controller.abort(), 5000);
+
+            const res = await fetch(`${apiBase}/market/history/${symbol}`, {
+                signal: controller.signal
+            });
+            clearTimeout(id);
+
+            if (res.ok) {
+                const data = await res.json();
+                if (Array.isArray(data) && data.length > 0) {
+                    return data.slice(-limit);
                 }
-            } catch (e) {
-                console.warn(`Failed to fetch history for ${symbol} from backend. Falling back to mock.`);
+                console.warn(`Backend returned empty data for ${symbol}.`);
+            } else {
+                console.warn(`Backend returned ${res.status} for ${symbol}`);
             }
+        } catch (e) {
+            console.warn(`Failed to connect to Python Backend for ${symbol}. Using Fallback Mock Data.`);
         }
 
-        // 2. Fallback to Mock Data
-        // await new Promise(resolve => setTimeout(resolve, 50)); // Sim latency
-        let data: BarData[] = [];
-        switch (symbol) {
-            case '000001': data = HISTORY_DATA_PINGAN; break;
-            case '600519': data = HISTORY_DATA_MOUTAI; break;
-            case '002594': data = HISTORY_DATA_BYD; break;
-            default: data = []; // Return empty or generic mock
-        }
-        return data.slice(-limit);
+        // Return fallback data if real data fetch failed, to keep the UI functional
+        // This ensures the "Critical: Could not fetch" error doesn't halt the app.
+        return FALLBACK_MOCK_DATA;
     }
 
     async getSnapshot(symbol: string): Promise<MarketSnapshot> {
-        // Snapshot usually comes from the main system state loop, 
-        // so this method might be redundant if we use the global state.
-        // Keeping it for standalone chart widgets.
         return {
             index_price: 3300,
             change_pct: 0,

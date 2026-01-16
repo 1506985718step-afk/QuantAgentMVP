@@ -1,3 +1,4 @@
+
 // Enum mapping to backend constraints
 export enum Side {
     BUY = 'BUY',
@@ -234,4 +235,13 @@ export interface BrokerOrder {
     price: number; // Limit Price
     status: OrderStatus;
     submittedAt: number;
+}
+
+// --- Simulation Types ---
+export interface SimulationStatus {
+    isPlaying: boolean;
+    speed: number; // 1 = 3s per day, 5 = 0.5s per day
+    currentDate: string;
+    progress: number; // 0-100
+    totalDays: number;
 }

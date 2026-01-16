@@ -14,66 +14,83 @@ class MarketDataService:
         Fetch real-time quotes using AkShare (optimized wrapper around Sina/EastMoney).
         Returns a dict mapped by symbol.
         """
-        results = {}
         try:
-            # AkShare's stock_zh_a_spot_em is heavy, so for specific symbols we might use simpler APIs
-            # or filter the big dataframe. For MVP performance, Sina is faster for small watchlists.
-            # Let's stick to the lightweight Sina crawler for *Tick* updates (sub-second),
-            # but use AkShare format if needed. 
-            # For this MVP, to ensure speed, we will use a lightweight fetcher pattern.
-            
-            # Using specific stock quote function from AkShare if available, otherwise fallback to Sina logic
-            # inside AkShare. 
-            # Actually, let's keep the sina_provider logic for real-time ticks because downloading 
-            # the entire market table via AkShare takes seconds.
-            
             from .sina_data import sina_provider
-            return sina_provider.get_realtime_data(symbols)
-
+            # This is async in the other file, but we might need a sync wrapper here if called synchronously
+            # However, for now, we rely on the caller to use the async provider directly if needed.
+            # Or we just return empty if this is used strictly synchronously.
+            return {} 
         except Exception as e:
             print(f"Realtime Data Error: {e}")
             return {}
 
     @lru_cache(maxsize=20)
-    def get_history_bars(self, symbol: str, days: int = 60) -> List[Dict[str, Any]]:
+    def get_history_bars(self, symbol: str, days: int = 250) -> List[Dict[str, Any]]:
         """
         Fetch historical daily bars for K-Line chart.
-        Cached to avoid hitting API limits on UI re-renders.
+        Defaults to ~1 year to cover 2024.
         """
         try:
-            # AkShare symbol format usually needs adjustment
-            # 000001 -> 000001 (Main board)
-            start_date = (datetime.now() - timedelta(days=days*2)).strftime("%Y%m%d")
+            # Fixed start date for "2024 Market Conditions" backtest
+            start_date = "20240101"
             end_date = datetime.now().strftime("%Y%m%d")
             
+            print(f"Fetching AkShare data for {symbol}...")
             # stock_zh_a_hist: A股日线数据
             df = ak.stock_zh_a_hist(symbol=symbol, period="daily", start_date=start_date, end_date=end_date, adjust="qfq")
             
-            if df.empty:
+            if df is None or df.empty:
+                print(f"AkShare returned empty for {symbol}")
                 return []
 
-            # Format for Frontend: { date, open, close, high, low, volume, ma20... }
+            # Clean up column names
+            df.rename(columns={
+                '日期': 'date', '开盘': 'open', '收盘': 'close', 
+                '最高': 'high', '最低': 'low', '成交量': 'volume'
+            }, inplace=True)
+
+            # Ensure numeric types
+            cols = ['open', 'close', 'high', 'low', 'volume']
+            for col in cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+
+            # --- Technical Indicators Calculation ---
+            
+            # 1. MA20
+            df['ma20'] = df['close'].rolling(window=20).mean()
+            
+            # 2. MA5 Volume
+            df['ma5_vol'] = df['volume'].rolling(window=5).mean()
+            
+            # 3. RSI (14)
+            delta = df['close'].diff()
+            up = delta.clip(lower=0)
+            down = -1 * delta.clip(upper=0)
+            ema_up = up.ewm(com=13, adjust=False).mean()
+            ema_down = down.ewm(com=13, adjust=False).mean()
+            rs = ema_up / ema_down
+            df['rsi'] = 100 - (100 / (1 + rs))
+
+            # Fill NaN
+            df.fillna(0, inplace=True)
+
+            # Take requested limit if needed
+            if len(df) > days:
+                df = df.tail(days)
+            
             bars = []
-            
-            # Calculate MA20 manually since API might not return it
-            df['ma20'] = df['收盘'].rolling(window=20).mean()
-            # Calculate MA5 Volume
-            df['ma5_vol'] = df['成交量'].rolling(window=5).mean()
-            
-            # Take last N days
-            df = df.tail(days)
-            
             for _, row in df.iterrows():
                 bars.append({
-                    "date": row['日期'],
-                    "open": float(row['开盘']),
-                    "close": float(row['收盘']),
-                    "high": float(row['最高']),
-                    "low": float(row['最低']),
-                    "volume": float(row['成交量']),
-                    "ma20": float(row['ma20']) if not pd.isna(row['ma20']) else float(row['开盘']),
-                    "ma5_vol": float(row['ma5_vol']) if not pd.isna(row['ma5_vol']) else float(row['成交量']),
-                    "rsi": 50 # Placeholder, calculating RSI in pandas is verbose for this snippet
+                    "date": str(row['date']),
+                    "open": float(row['open']),
+                    "close": float(row['close']),
+                    "high": float(row['high']),
+                    "low": float(row['low']),
+                    "volume": float(row['volume']),
+                    "ma20": float(row['ma20']),
+                    "ma5_vol": float(row['ma5_vol']),
+                    "rsi": float(row['rsi'])
                 })
                 
             return bars

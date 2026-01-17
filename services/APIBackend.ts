@@ -1,3 +1,4 @@
+
 import { 
     AccountSummary, Position, TradeIntent, SystemEvent, MarketSnapshot, 
     AuditReport, TradeMetrics, BrokerOrder
@@ -20,11 +21,13 @@ class APIBackendService {
             up_count: 0,
             down_count: 0,
             limit_up_count: 0,
-            limit_down_count: 0
+            limit_down_count: 0,
+            // Removed duplicate properties that were causing errors
+            replay_date: '2026-01-17' // Default to requested date
         } as MarketSnapshot,
         account: {
-            total_equity: 0,
-            available_cash: 0,
+            total_equity: 100000, // Default Start
+            available_cash: 100000,
             market_value: 0,
             day_pnl: 0,
             day_pnl_pct: 0,
@@ -34,7 +37,7 @@ class APIBackendService {
         intents: [] as TradeIntent[],
         events: [] as SystemEvent[],
         audit: {
-            date: new Date().toISOString().split('T')[0],
+            date: '2026-01-17', // Default to requested date
             score: 100,
             status: 'PASS',
             checks: [],
@@ -49,7 +52,8 @@ class APIBackendService {
             max_drawdown: 0,
             cost_ratio: 0
         } as TradeMetrics,
-        orders: [] as BrokerOrder[]
+        orders: [] as BrokerOrder[],
+        watchlist: [] as {symbol: string, name: string}[]
     };
 
     constructor() {
@@ -77,7 +81,7 @@ class APIBackendService {
             };
             this.notify();
         } catch (e) {
-            console.warn("Backend disconnected (Is Python server running?):", e);
+            // console.warn("Backend disconnected (Is Python server running?):", e);
             if (this.state.isConnected) {
                 this.state = { ...this.state, isConnected: false };
                 this.notify();
@@ -127,8 +131,10 @@ class APIBackendService {
     }
 
     async nextDay() {
-        await fetch(`${API_BASE}/api/debug/next_day`, { method: 'POST' });
-        this.fetchState();
+        try {
+            await fetch(`${API_BASE}/api/debug/next_day`, { method: 'POST' });
+            this.fetchState();
+        } catch (e) {}
     }
     
     async cancelOrder(id: string) {
@@ -141,6 +147,12 @@ class APIBackendService {
     }
     
     async setTotalEquity(amount: number) {
+        // Optimistic Update for Mock Mode / Fast UI
+        this.state.account.total_equity = amount;
+        // Reset buying power assumption roughly
+        this.state.account.available_cash = amount - this.state.account.market_value;
+        this.notify();
+
         try {
             await fetch(`${API_BASE}/api/account/equity`, { 
                 method: 'POST',
@@ -149,8 +161,54 @@ class APIBackendService {
             });
             this.fetchState();
         } catch (e) {
-            console.error("Failed to update equity:", e);
+            // console.error("Failed to update equity (Backend offline):", e);
         }
+    }
+
+    async addToWatchlist(symbol: string, name: string) {
+        // Optimistic
+        const exists = this.state.watchlist.some(w => w.symbol === symbol);
+        if (!exists) {
+            this.state.watchlist = [...this.state.watchlist, {symbol, name}];
+            this.notify();
+        }
+
+        try {
+            await fetch(`${API_BASE}/api/watchlist/add`, { 
+                method: 'POST', 
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbol, name })
+            });
+            this.fetchState();
+        } catch(e) { console.error(e); }
+    }
+
+    async removeFromWatchlist(symbol: string) {
+        // Optimistic
+        this.state.watchlist = this.state.watchlist.filter(w => w.symbol !== symbol);
+        this.notify();
+        try {
+            await fetch(`${API_BASE}/api/watchlist/remove`, { 
+                method: 'POST', 
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbol })
+            });
+            this.fetchState();
+        } catch(e) { console.error(e); }
+    }
+
+    async setWatchlist(items: {symbol: string, name: string}[]) {
+        // Optimistic
+        this.state.watchlist = items;
+        this.notify();
+        try {
+            await fetch(`${API_BASE}/api/watchlist/set`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ items })
+            });
+            this.fetchState();
+        } catch(e) { console.error(e); }
     }
 }
 

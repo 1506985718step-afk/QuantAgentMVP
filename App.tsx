@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Header from './components/Header';
 import MarketStatus from './components/MarketStatus';
 import AccountSummary from './components/AccountSummary';
@@ -12,83 +12,152 @@ import PositionHealth from './components/PositionHealth';
 import KLineChart from './components/KLineChart';
 import OrderList from './components/OrderList';
 import AIChatPanel from './components/AIChatPanel';
-import BacktestControls from './components/BacktestControls'; // New Import
+import BacktestControls from './components/BacktestControls'; 
+import NewsSentiment from './components/NewsSentiment';
 
 import { backend as mockBackend } from './services/MockBackend'; 
 import { backend as apiBackend } from './services/APIBackend';
 import { config, setBackendMode } from './services/config';
 import { dataProvider } from './services/DataProvider';
-import { Loader2, Activity, PieChart, BarChart2, LayoutDashboard, Server, MonitorSmartphone, WifiOff, MessageSquareText } from 'lucide-react';
+import { Loader2, Activity, PieChart, BarChart2, LayoutDashboard, MessageSquareText, TrendingUp, Power, ScanLine, Plus, X, ChevronDown } from 'lucide-react';
 import { BarData } from './services/historicalData';
 
-const App: React.FC = () => {
-    // Determine active backend based on config
-    const [useRealBackend, setUseRealBackend] = useState(config.useRealBackend);
-    
-    // Dynamic backend reference
-    const activeBackend = useRealBackend ? apiBackend : mockBackend;
+// Preset Sectors for Quick Import
+const SECTORS = {
+    "白酒龙头": [
+        { symbol: '600519', name: '贵州茅台' },
+        { symbol: '000858', name: '五粮液' },
+        { symbol: '000568', name: '泸州老窖' }
+    ],
+    "新能源车": [
+        { symbol: '002594', name: '比亚迪' },
+        { symbol: '300750', name: '宁德时代' },
+        { symbol: '601012', name: '隆基绿能' }
+    ],
+    "AI算力": [
+        { symbol: '601138', name: '工业富联' },
+        { symbol: '000977', name: '浪潮信息' },
+        { symbol: '300308', name: '中际旭创' }
+    ],
+    "大金融": [
+        { symbol: '300059', name: '东方财富' },
+        { symbol: '600030', name: '中信证券' },
+        { symbol: '000001', name: '平安银行' }
+    ]
+};
 
+const DEFAULT_WATCHLIST = SECTORS["大金融"];
+
+const App: React.FC = () => {
+    const [useRealBackend, setUseRealBackend] = useState(config.useRealBackend);
+    const activeBackend = useRealBackend ? apiBackend : mockBackend;
     const [state, setState] = useState(activeBackend.getState());
     const [isLoading, setIsLoading] = useState<boolean>(true);
     const [activeTab, setActiveTab] = useState<'live' | 'analysis' | 'advisor'>('live');
     const [chartSymbol, setChartSymbol] = useState('000001'); 
     const [chartData, setChartData] = useState<BarData[]>([]);
+    
+    // Auto-Scan State
+    const [isAutoScanning, setIsAutoScanning] = useState(false);
+    const autoScanTimer = useRef<any>(null);
 
-    // Handle Backend Switch
+    // Watchlist UI State
+    const [isAddStockOpen, setIsAddStockOpen] = useState(false);
+    const [newStockCode, setNewStockCode] = useState('');
+    const [newStockName, setNewStockName] = useState('');
+    const [showSectorMenu, setShowSectorMenu] = useState(false);
+
     const toggleBackend = () => {
         const newValue = !useRealBackend;
         setUseRealBackend(newValue);
         setBackendMode(newValue);
-        window.location.reload(); // Simple reload to reset all subscriptions cleanly
+        setIsLoading(true);
+        // Reset auto scan when switching modes
+        setIsAutoScanning(false);
+        setTimeout(() => setIsLoading(false), 300);
     };
 
     useEffect(() => {
-        // Subscribe to the selected backend
         const unsubscribe = activeBackend.subscribe((newState: any) => {
             setState(newState);
-            // If backend provides fresh orders/intents, chart might need refresh, 
-            // but usually chart data is static history + live ticks.
         });
-        
-        // Initial Fetch
         const init = async () => {
             await fetchChartData(chartSymbol);
             setIsLoading(false);
         };
         init();
-
         return () => unsubscribe();
     }, [chartSymbol, useRealBackend]);
 
+    useEffect(() => {
+        fetchChartData(chartSymbol);
+    }, [chartSymbol]);
+
+    // Auto-Scan Effect
+    useEffect(() => {
+        if (isAutoScanning && useRealBackend) {
+            autoScanTimer.current = setInterval(async () => {
+                await handleForceTick();
+            }, 10000); // Scan every 10 seconds
+        } else {
+            if (autoScanTimer.current) clearInterval(autoScanTimer.current);
+        }
+        return () => {
+            if (autoScanTimer.current) clearInterval(autoScanTimer.current);
+        };
+    }, [isAutoScanning, useRealBackend]);
+
     const fetchChartData = async (sym: string) => {
-        const data = await dataProvider.getBars(sym, 60);
+        const data = await dataProvider.getBars(sym, 1000);
         setChartData(data);
     };
 
-    const handleApprove = (id: string, price: number) => {
-        activeBackend.approveSignal(id, price);
-    };
-
-    const handleReject = (id: string) => {
-        activeBackend.rejectSignal(id);
+    const handleApprove = (id: string, price: number) => activeBackend.approveSignal(id, price);
+    const handleReject = (id: string) => activeBackend.rejectSignal(id);
+    const handleCancelOrder = (id: string) => activeBackend.cancelOrder(id);
+    const handleUpdateEquity = (amount: number) => activeBackend.setTotalEquity(amount);
+    
+    const handleManualNextDay = async () => {
+        if (useRealBackend) await fetch(`${config.apiBaseUrl}/debug/next_day`, { method: 'POST' });
+        else (mockBackend as any).nextDay();
     };
     
-    const handleCancelOrder = (id: string) => {
-        activeBackend.cancelOrder(id);
-    }
-
-    const handleUpdateEquity = (amount: number) => {
-        activeBackend.setTotalEquity(amount);
-    };
-    
-    // Debug Trigger (Only for Real Backend to force tick)
     const handleForceTick = async () => {
-        if (useRealBackend) {
+        try {
             await fetch(`${config.apiBaseUrl}/debug/tick`, { method: 'POST' });
+        } catch (e) {
+            console.error("Scan failed", e);
         }
     };
 
-    // Simulation Handlers (Only valid for Mock Backend)
+    // Watchlist Handlers
+    const handleAddStock = async () => {
+        if (!newStockCode || !newStockName) return;
+        // Use active backend (works for both Real and Mock via Optimistic update)
+        await activeBackend.addToWatchlist(newStockCode, newStockName);
+        setIsAddStockOpen(false);
+        setNewStockCode('');
+        setNewStockName('');
+    };
+
+    const handleRemoveStock = async (symbol: string, e: React.MouseEvent) => {
+        e.stopPropagation();
+        await activeBackend.removeFromWatchlist(symbol);
+    };
+
+    const handleLoadSector = async (sectorName: string) => {
+        const stocks = SECTORS[sectorName as keyof typeof SECTORS];
+        
+        // Optimistically replace the watchlist view
+        await activeBackend.setWatchlist(stocks);
+        
+        // Auto-select the first stock in the new sector for the chart
+        if (stocks.length > 0) {
+            setChartSymbol(stocks[0].symbol);
+        }
+        setShowSectorMenu(false);
+    };
+
     const handleSimPlay = () => !useRealBackend && (mockBackend as any).togglePlayback();
     const handleSimPause = () => !useRealBackend && (mockBackend as any).togglePlayback();
     const handleSimSpeed = (s: number) => !useRealBackend && (mockBackend as any).setSpeed(s);
@@ -96,51 +165,33 @@ const App: React.FC = () => {
 
     if (isLoading) {
         return (
-            <div className="flex h-screen items-center justify-center bg-slate-950 text-emerald-500">
+            <div className="flex h-screen items-center justify-center bg-[#09090b] text-emerald-500">
                 <div className="flex flex-col items-center gap-4">
-                    <Loader2 className="h-10 w-10 animate-spin" />
-                    <span className="font-mono text-sm tracking-widest text-slate-400">正在连接交易核心...</span>
+                    <Loader2 className="h-8 w-8 animate-spin text-zinc-500" />
+                    <span className="font-mono text-xs tracking-widest text-zinc-500 uppercase">系统初始化中...</span>
                 </div>
             </div>
         );
     }
 
-    const { market, account, positions, intents, events, audit, metrics, orders, isConnected, simulation } = state as any;
-    
-    // Check if we are in real mode but disconnected
+    const { market, account, positions, intents, events, audit, metrics, orders, isConnected, simulation, watchlist } = state as any;
     const showConnectionError = useRealBackend && isConnected === false;
-
-    // Filter intents: Show PENDING (from Python) or PENDING_APPROVAL (from Mock)
     const pendingIntents = intents?.filter((i: any) => i.status === 'PENDING_APPROVAL' || i.status === 'PENDING') || [];
+    const visibleChartData = (!useRealBackend && market?.replay_date && chartData.length > 0)
+        ? chartData.filter(d => d.date <= market.replay_date)
+        : chartData;
+    
+    // Use dynamic watchlist from backend if available, else default
+    const currentWatchlist = (watchlist && watchlist.length > 0) ? watchlist : DEFAULT_WATCHLIST;
 
     return (
-        <div className="min-h-screen bg-slate-950 text-slate-200 selection:bg-emerald-500/30 pb-20 relative">
-            <Header />
+        <div className="min-h-screen pb-32 relative font-sans antialiased text-zinc-200">
+            <Header 
+                isLiveMode={useRealBackend} 
+                onToggleMode={toggleBackend}
+                onManualNextDay={handleManualNextDay}
+            />
             
-            {/* Connection Error Banner */}
-            {showConnectionError && (
-                <div className="bg-rose-600/90 text-white px-4 py-2 text-sm text-center font-bold flex items-center justify-center gap-2 sticky top-16 z-40 backdrop-blur-sm shadow-lg animate-in slide-in-from-top-2">
-                    <WifiOff className="h-4 w-4" />
-                    后端连接断开：请启动 Python 服务器 (Port 8000) 或切换至 Mock 模式
-                </div>
-            )}
-            
-            {/* Backend Mode Switcher (Dev Tool) */}
-            <div className="fixed bottom-4 right-4 z-50">
-                <button 
-                    onClick={toggleBackend}
-                    className={`flex items-center gap-2 px-3 py-2 rounded-full shadow-lg border text-xs font-bold transition-all ${
-                        useRealBackend 
-                        ? 'bg-indigo-600 border-indigo-400 text-white hover:bg-indigo-500' 
-                        : 'bg-slate-800 border-slate-600 text-slate-400 hover:bg-slate-700'
-                    }`}
-                >
-                    {useRealBackend ? <Server className="h-4 w-4" /> : <MonitorSmartphone className="h-4 w-4" />}
-                    {useRealBackend ? '模式: Python 实盘' : '模式: AI 策略训练'}
-                </button>
-            </div>
-            
-            {/* Simulation Controls (Visible only in Mock Mode) */}
             {!useRealBackend && simulation && (
                 <BacktestControls 
                     status={simulation}
@@ -151,143 +202,256 @@ const App: React.FC = () => {
                 />
             )}
             
-            <main className={`container mx-auto mt-8 max-w-[1400px] px-4 sm:px-6 space-y-8 ${showConnectionError ? 'opacity-50 pointer-events-none' : ''}`}>
+            <main className="container mx-auto mt-6 max-w-[1800px] px-4 sm:px-6 space-y-6">
                 
-                {/* Top Section: Summary & Health (Unified Grid) */}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6 auto-rows-fr">
-                     <AccountSummary 
-                        data={account || {}} 
-                        onUpdateEquity={handleUpdateEquity}
-                    />
-                    <PositionHealth 
-                        score={account?.position_health_score || 100} 
-                        kellySuggestion={account?.kelly_suggestion || 0}
-                        currentExposure={account ? (account.market_value / account.total_equity) : 0}
-                    />
-                </div>
-
-                {/* Tab Navigation (Pill Style) */}
-                <div className="flex justify-center items-center gap-4">
-                    <div className="inline-flex rounded-lg bg-slate-900 p-1 border border-slate-800 shadow-sm">
-                        <button
-                            onClick={() => setActiveTab('live')}
-                            className={`flex items-center gap-2 px-6 py-2.5 text-sm font-medium rounded-md transition-all duration-200 ${
-                                activeTab === 'live' 
-                                ? 'bg-slate-800 text-emerald-400 shadow-sm ring-1 ring-slate-700' 
-                                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
-                            }`}
-                        >
-                            <LayoutDashboard className="h-4 w-4" />
-                            {useRealBackend ? '实盘监控' : '训练看板'}
-                        </button>
-                        <button
-                            onClick={() => setActiveTab('analysis')}
-                            className={`flex items-center gap-2 px-6 py-2.5 text-sm font-medium rounded-md transition-all duration-200 ${
-                                activeTab === 'analysis' 
-                                ? 'bg-slate-800 text-indigo-400 shadow-sm ring-1 ring-slate-700' 
-                                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
-                            }`}
-                        >
-                            <PieChart className="h-4 w-4" />
-                            复盘分析
-                        </button>
-                        <button
-                            onClick={() => setActiveTab('advisor')}
-                            className={`flex items-center gap-2 px-6 py-2.5 text-sm font-medium rounded-md transition-all duration-200 ${
-                                activeTab === 'advisor' 
-                                ? 'bg-slate-800 text-indigo-400 shadow-sm ring-1 ring-slate-700' 
-                                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
-                            }`}
-                        >
-                            <MessageSquareText className="h-4 w-4" />
-                            AI 顾问
-                        </button>
+                {/* Status Banners */}
+                {!useRealBackend && (
+                    <div className="glass-panel rounded-lg p-3 flex items-center justify-between text-sm text-emerald-400/90 shadow-[0_0_15px_rgba(16,185,129,0.1)]">
+                        <div className="flex items-center gap-3">
+                             <div className="relative flex h-2 w-2 ml-1">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                            </div>
+                            <span className="font-medium tracking-wide">训练模式 ACTIVE</span>
+                            <span className="text-zinc-500 hidden sm:inline">|</span>
+                            <span className="text-zinc-400 text-xs hidden sm:inline">2024-2025 历史行情回放</span>
+                        </div>
+                        <span className="text-[10px] font-mono opacity-70 bg-emerald-950/30 px-2 py-0.5 rounded border border-emerald-500/20">VIRTUAL FUND</span>
                     </div>
-                    
-                    {useRealBackend && (
-                         <button 
-                            onClick={handleForceTick}
-                            className="flex items-center gap-1 text-xs bg-indigo-500/20 text-indigo-400 px-3 py-1 rounded-md hover:bg-indigo-500/30 border border-indigo-500/20"
-                            title="Force Strategy Scan"
-                        >
-                            <Activity className="h-3 w-3" />
-                            扫描市场
-                        </button>
-                    )}
+                )}
+
+                {useRealBackend && showConnectionError && (
+                     <div className="bg-rose-950/20 border border-rose-500/20 rounded-lg p-3 text-sm text-rose-400 flex items-center gap-3">
+                        <div className="h-1.5 w-1.5 rounded-full bg-rose-500"></div>
+                        <span><b>Connection Lost:</b> Please verify Python backend (Port 8000).</span>
+                    </div>
+                )}
+                
+                {/* Dashboard Grid - Row 1 */}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-6">
+                    <div className="lg:col-span-8 grid grid-cols-1 sm:grid-cols-3 gap-6">
+                         <AccountSummary 
+                            data={account || {}} 
+                            onUpdateEquity={handleUpdateEquity}
+                        />
+                    </div>
+                    <div className="lg:col-span-4">
+                        <PositionHealth 
+                            score={account?.position_health_score || 100} 
+                            kellySuggestion={account?.kelly_suggestion || 0}
+                            currentExposure={account ? (account.market_value / account.total_equity) : 0}
+                        />
+                    </div>
                 </div>
 
-                {/* --- TAB CONTENT: LIVE --- */}
-                {activeTab === 'live' && (
-                    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                        {/* Market Overview */}
-                        <MarketStatus data={market || {}} />
+                {/* Navigation Tabs */}
+                <div className="flex justify-between items-center border-b border-white/5 pb-1">
+                    <div className="flex gap-6">
+                        {[
+                            { id: 'live', label: '交易看板', icon: LayoutDashboard },
+                            { id: 'analysis', label: '分析报表', icon: PieChart },
+                            { id: 'advisor', label: 'AI 顾问', icon: MessageSquareText }
+                        ].map(tab => (
+                            <button
+                                key={tab.id}
+                                onClick={() => setActiveTab(tab.id as any)}
+                                className={`flex items-center gap-2 pb-3 text-sm font-medium transition-all relative ${
+                                    activeTab === tab.id 
+                                    ? 'text-white' 
+                                    : 'text-zinc-500 hover:text-zinc-300'
+                                }`}
+                            >
+                                <tab.icon className="h-4 w-4" />
+                                {tab.label}
+                                {activeTab === tab.id && (
+                                    <span className="absolute bottom-0 left-0 w-full h-0.5 bg-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.5)]"></span>
+                                )}
+                            </button>
+                        ))}
+                    </div>
+                </div>
 
-                        {/* Visual Verification Section (Fixed Heights) */}
-                        <div className="grid gap-6 lg:grid-cols-3 items-start">
-                            <div className="lg:col-span-2 flex flex-col gap-4">
-                                <div className="flex items-center justify-between px-1">
-                                    <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
-                                        <BarChart2 className="h-5 w-5 text-indigo-400" />
-                                        市场形态验证
-                                    </h2>
-                                    <div className="flex bg-slate-900 rounded-lg p-1 border border-slate-800">
-                                        {['000001', '600519', '002594'].map(sym => (
+                {activeTab === 'live' && (
+                    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                        {/* Market Context */}
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            <div className="lg:col-span-2">
+                                <MarketStatus data={market || {}} />
+                            </div>
+                            <div className="lg:col-span-1 h-[140px] lg:h-auto">
+                                <NewsSentiment 
+                                    news={market?.top_news || []} 
+                                    sentimentScore={market?.sentiment_score || 50} 
+                                    aiComment={market?.ai_market_comment}
+                                />
+                            </div>
+                        </div>
+
+                        {/* Chart & Execution */}
+                        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-[500px]">
+                            <div className="lg:col-span-8 flex flex-col gap-4 h-full">
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2 text-zinc-400">
+                                        <BarChart2 className="h-4 w-4" />
+                                        <span className="text-sm font-medium">行业验证</span>
+                                        
+                                        {/* Sector Presets */}
+                                        <div className="relative ml-2">
                                             <button 
-                                                key={sym}
-                                                onClick={() => setChartSymbol(sym)}
-                                                className={`px-3 py-1 rounded-md text-xs font-mono transition-all ${
-                                                    chartSymbol === sym 
-                                                    ? 'bg-indigo-600 text-white shadow-sm' 
-                                                    : 'text-slate-400 hover:text-slate-200'
-                                                }`}
+                                                onClick={() => setShowSectorMenu(!showSectorMenu)}
+                                                className="text-[10px] text-indigo-400 flex items-center gap-1 hover:text-indigo-300 transition-colors bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20"
                                             >
-                                                {sym}
+                                                导入板块 <ChevronDown className="h-3 w-3" />
                                             </button>
-                                        ))}
+                                            
+                                            {showSectorMenu && (
+                                                <div className="absolute top-full left-0 mt-1 w-32 bg-zinc-900 border border-zinc-700 rounded-md shadow-xl z-20 py-1 flex flex-col">
+                                                    {Object.keys(SECTORS).map(sector => (
+                                                        <button 
+                                                            key={sector}
+                                                            onClick={() => handleLoadSector(sector)}
+                                                            className="text-left px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-white"
+                                                        >
+                                                            {sector}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    {/* Watchlist Scroll & Add */}
+                                    <div className="flex gap-2 items-center flex-1 justify-end min-w-0">
+                                        <div className="flex gap-1 bg-zinc-900/50 p-1 rounded-lg border border-white/5 overflow-x-auto no-scrollbar max-w-[70%]">
+                                            {currentWatchlist.map((stock: any) => (
+                                                <div key={stock.symbol} className="relative group">
+                                                    <button 
+                                                        onClick={() => setChartSymbol(stock.symbol)}
+                                                        className={`px-3 py-1 rounded text-[10px] font-bold font-mono transition-all whitespace-nowrap pr-5 ${
+                                                            chartSymbol === stock.symbol 
+                                                            ? 'bg-zinc-800 text-white shadow-sm border border-white/10' 
+                                                            : 'text-zinc-500 hover:text-zinc-300'
+                                                        }`}
+                                                    >
+                                                        {stock.name}
+                                                    </button>
+                                                    <button 
+                                                        onClick={(e) => handleRemoveStock(stock.symbol, e)}
+                                                        className="absolute right-1 top-1.5 text-zinc-600 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                                                    >
+                                                        <X className="h-3 w-3" />
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+
+                                        {/* Add Stock Button */}
+                                        <div className="relative">
+                                            <button 
+                                                onClick={() => setIsAddStockOpen(!isAddStockOpen)}
+                                                className="p-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 border border-zinc-700"
+                                            >
+                                                <Plus className="h-3 w-3" />
+                                            </button>
+                                            {isAddStockOpen && (
+                                                <div className="absolute right-0 top-full mt-2 w-48 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl z-20 p-3">
+                                                    <div className="space-y-2">
+                                                        <input 
+                                                            placeholder="代码 (e.g 600030)" 
+                                                            className="w-full bg-black border border-zinc-700 rounded px-2 py-1 text-xs text-white"
+                                                            value={newStockCode}
+                                                            onChange={e => setNewStockCode(e.target.value)}
+                                                        />
+                                                        <input 
+                                                            placeholder="名称 (e.g 中信证券)" 
+                                                            className="w-full bg-black border border-zinc-700 rounded px-2 py-1 text-xs text-white"
+                                                            value={newStockName}
+                                                            onChange={e => setNewStockName(e.target.value)}
+                                                        />
+                                                        <button 
+                                                            onClick={handleAddStock}
+                                                            className="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs py-1 rounded font-bold"
+                                                        >
+                                                            添加
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
                                     </div>
                                 </div>
-                                {/* Chart Container */}
-                                <div className="h-[320px] w-full"> 
+                                <div className="flex-1 glass-card rounded-lg overflow-hidden relative shadow-lg"> 
                                     <KLineChart 
                                         symbol={chartSymbol} 
-                                        data={chartData} 
-                                        height={320} 
+                                        data={visibleChartData} 
+                                        height={450} 
                                         highlightDate={market?.replay_date} 
                                     />
                                 </div>
                             </div>
                             
-                            <div className="lg:col-span-1 flex flex-col gap-4">
-                                <div className="h-8"></div> {/* Spacer to align with chart header */}
-                                {/* Order List Container (Fixed Height to match chart) */}
-                                <div className="h-[320px]">
-                                    <OrderList orders={orders || []} onCancel={handleCancelOrder} />
-                                </div>
+                            <div className="lg:col-span-4 flex flex-col h-full">
+                                <div className="h-8 mb-4"></div> 
+                                <OrderList orders={orders || []} onCancel={handleCancelOrder} />
                             </div>
                         </div>
 
-                        {/* Main Interaction Area */}
-                        <div className="grid grid-cols-1 gap-8 lg:grid-cols-12 items-start">
-                            {/* Left Column: Actionable Signals & Positions */}
-                            <div className="lg:col-span-8 flex flex-col gap-8">
+                        {/* Signals & Positions */}
+                        <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+                            <div className="xl:col-span-8 space-y-6">
                                 <section>
-                                    <div className="mb-4 flex items-center justify-between">
-                                        <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
-                                            <Activity className="h-5 w-5 text-emerald-500" />
-                                            待审批信号 (AI)
+                                    <div className="flex items-center justify-between mb-4 bg-zinc-900/40 p-2 rounded-lg border border-white/5">
+                                        <h2 className="text-lg font-medium text-white flex items-center gap-2 pl-2">
+                                            <TrendingUp className="h-5 w-5 text-emerald-500" />
+                                            信号队列
                                         </h2>
-                                        <span className="rounded-full bg-slate-800 border border-slate-700 px-3 py-1 text-xs font-medium text-slate-400">
-                                            {pendingIntents.length || 0} 待处理
-                                        </span>
+                                        
+                                        <div className="flex items-center gap-3">
+                                            {/* Auto Scan Toggle (Live Only) */}
+                                            {useRealBackend && (
+                                                <button
+                                                    onClick={() => setIsAutoScanning(!isAutoScanning)}
+                                                    className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-bold transition-all border ${
+                                                        isAutoScanning 
+                                                        ? 'bg-indigo-500/20 text-indigo-400 border-indigo-500/50 shadow-[0_0_10px_rgba(99,102,241,0.3)]' 
+                                                        : 'bg-zinc-800 text-zinc-500 border-zinc-700 hover:text-zinc-300'
+                                                    }`}
+                                                    title={isAutoScanning ? "自动巡航中 (每10秒)" : "点击开启自动巡航"}
+                                                >
+                                                    <Power className={`h-3.5 w-3.5 ${isAutoScanning ? 'text-indigo-400' : ''}`} />
+                                                    {isAutoScanning ? 'AUTO: ON' : 'AUTO: OFF'}
+                                                </button>
+                                            )}
+
+                                            <div className="h-4 w-px bg-white/10"></div>
+
+                                            {/* Manual Scan Button */}
+                                            <button
+                                                onClick={handleForceTick}
+                                                className="flex items-center gap-2 px-4 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-bold rounded shadow-lg border border-white/10 transition-all active:scale-95 hover:border-white/20"
+                                                title="立即触发全市场扫描"
+                                            >
+                                                <ScanLine className="h-3.5 w-3.5 text-emerald-400" />
+                                                立即扫描
+                                            </button>
+
+                                            {pendingIntents.length > 0 && (
+                                                <span className="bg-emerald-500/10 text-emerald-400 text-xs px-2 py-0.5 rounded border border-emerald-500/20 animate-pulse">
+                                                    {pendingIntents.length} 待处理
+                                                </span>
+                                            )}
+                                        </div>
                                     </div>
                                     
                                     {pendingIntents.length === 0 ? (
-                                        <div className="rounded-xl border border-dashed border-slate-800 bg-slate-900/30 p-12 text-center text-slate-500">
-                                            <div className="mx-auto w-12 h-12 bg-slate-900 rounded-full flex items-center justify-center mb-3">
-                                                <Activity className="h-6 w-6 opacity-50" />
-                                            </div>
-                                            <p className="font-medium">暂时没有来自 StrategyAgent 的信号</p>
-                                            <p className="text-xs mt-1 opacity-60">LLM 正在实时扫描市场形态...</p>
+                                        <div className="glass-panel rounded-lg p-8 flex flex-col items-center justify-center text-zinc-600 border-dashed border-zinc-800">
+                                            <Activity className={`h-8 w-8 mb-3 opacity-20 ${isAutoScanning ? 'animate-pulse text-indigo-500 opacity-50' : ''}`} />
+                                            <p className="text-sm font-medium">
+                                                {isAutoScanning ? "系统正在自动巡航中..." : "等待扫描指令..."}
+                                            </p>
+                                            <p className="text-xs text-zinc-700 mt-1">
+                                                {isAutoScanning ? "AI 正在实时监控盘口异动" : "点击上方“立即扫描”开始寻找机会"}
+                                            </p>
                                         </div>
                                     ) : (
                                         <div className="grid gap-4 md:grid-cols-2">
@@ -304,14 +468,13 @@ const App: React.FC = () => {
                                 </section>
 
                                 <section>
-                                    <h2 className="mb-4 text-xl font-bold text-slate-100">当前持仓</h2>
+                                    <h2 className="text-lg font-medium text-white mb-4 pl-2">当前持仓</h2>
                                     <PositionTable positions={positions || []} />
                                 </section>
                             </div>
 
-                            {/* Right Column: Event Stream (Sticky) */}
-                            <div className="lg:col-span-4">
-                                <div className="sticky top-24 h-[calc(100vh-8rem)] min-h-[500px] max-h-[800px]">
+                            <div className="xl:col-span-4">
+                                <div className="sticky top-24">
                                     <EventLog events={events || []} />
                                 </div>
                             </div>
@@ -319,30 +482,16 @@ const App: React.FC = () => {
                     </div>
                 )}
 
-                {/* --- TAB CONTENT: ANALYSIS --- */}
                 {activeTab === 'analysis' && (
-                    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                         <section>
-                            <h2 className="mb-4 text-xl font-bold text-slate-100">AI 审计报告</h2>
-                            <AIAuditPanel report={audit || {}} />
-                        </section>
-                        <section>
-                            <h2 className="mb-4 text-xl font-bold text-slate-100">交易行为分析</h2>
-                            <BehaviorAnalytics metrics={metrics || {}} />
-                        </section>
+                    <div className="grid grid-cols-1 gap-6 animate-in fade-in">
+                        <AIAuditPanel report={audit || {}} />
+                        <BehaviorAnalytics metrics={metrics || {}} />
                     </div>
                 )}
 
-                {/* --- TAB CONTENT: AI ADVISOR --- */}
                 {activeTab === 'advisor' && (
-                    <div className="mx-auto max-w-4xl animate-in fade-in slide-in-from-bottom-4 duration-500">
-                        <section>
-                             <div className="mb-4">
-                                <h2 className="text-xl font-bold text-slate-100">DeepSeek 投资顾问</h2>
-                                <p className="text-sm text-slate-500">您的专属量化专家，提供策略分析与心理建设支持</p>
-                             </div>
-                            <AIChatPanel />
-                        </section>
+                    <div className="max-w-4xl mx-auto animate-in fade-in">
+                        <AIChatPanel />
                     </div>
                 )}
 

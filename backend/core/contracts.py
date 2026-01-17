@@ -1,3 +1,4 @@
+
 from enum import Enum
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
@@ -16,6 +17,7 @@ class IntentType(str, Enum):
     STOP_LOSS_SELL = "STOP_LOSS_SELL"
     TAKE_PROFIT_SELL = "TAKE_PROFIT_SELL"
     REDUCE_ONLY = "REDUCE_ONLY"
+    TIME_STOP_SELL = "TIME_STOP_SELL"
 
 class AgentType(str, Enum):
     MARKET = "market"
@@ -74,14 +76,76 @@ class EventSnapshots(BaseModel):
     state: Optional[Dict[str, Any]] = None
     evidence: Optional[Dict[str, Any]] = None
 
+class NewsItem(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    title: str
+    summary: Optional[str] = None
+    source: str
+    time: str
+    sentiment: str = "neutral"
+    impact_score: int = 0
+
+class AuditCheck(BaseModel):
+    rule_name: str
+    status: str
+    details: str
+
 # --- Primary Models ---
+
+class StrategyConfig(BaseModel):
+    vol_threshold: float
+    stop_loss_pct: float
+    take_profit_pct: float
+    max_drawdown_limit: float
+    last_updated: str
+    update_reason: str
+
+class AccountSummary(BaseModel):
+    total_equity: float
+    available_cash: float
+    market_value: float
+    day_pnl: float
+    day_pnl_pct: float
+    filled_buys_today: int
+    position_health_score: int = 100
+    kelly_suggestion: float = 0.0
+
+class MarketSnapshot(BaseModel):
+    index_price: float
+    change_pct: float
+    sentiment_score: int
+    volatility_index: float
+    up_count: int
+    down_count: int
+    limit_up_count: int
+    limit_down_count: int
+    replay_date: Optional[str] = None
+    top_news: List[NewsItem] = []
+    ai_market_comment: Optional[str] = None
+
+class TradeMetrics(BaseModel):
+    win_rate: float
+    profit_factor: float
+    avg_win_pnl: float
+    avg_loss_pnl: float
+    total_trades: int
+    max_drawdown: float
+    cost_ratio: float
+
+class AuditReport(BaseModel):
+    date: str
+    score: int
+    status: str
+    checks: List[AuditCheck]
+    ai_suggestions: List[str]
+    active_config: Optional[StrategyConfig] = None
 
 class TradeIntent(BaseModel):
     intent_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     trade_day: str
     session_id: str
     symbol: str
-    name: str = "Unknown" # A-share Name
+    name: str = "Unknown"
     side: Side
     intent_type: IntentType
     
@@ -97,27 +161,23 @@ class TradeIntent(BaseModel):
     source: IntentSource
     version: IntentVersion
     
-    # Frontend/System State (Added)
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
     status: OrderStatus = OrderStatus.PENDING
     filled_qty: int = 0
 
 class Position(BaseModel):
     symbol: str
-    name: str = "Unknown" # A-share Name
+    name: str = "Unknown"
     quantity: int
-    sellable: int # T+1 Available
+    sellable: int
     average_cost: float
     current_price: float
     market_value: float
     unrealized_pnl: float
     unrealized_pnl_pct: float
     today_buys: int
-    days_held: int = 0 # New: Tracks T+N status. 0 = Bought Today.
-    # Helper for logic
-    stop_loss_price: Optional[float] = None 
-
-# --- Event Contract v1.1 ---
+    days_held: int = 0
+    stop_loss_price: Optional[float] = None
 
 class SystemEvent(BaseModel):
     event_id: str = Field(default_factory=lambda: f"evt-{uuid.uuid4()}")
@@ -125,7 +185,6 @@ class SystemEvent(BaseModel):
     trade_day: str
     session_id: str
     
-    # Traceability
     trace_id: str = Field(default_factory=lambda: f"trace-{uuid.uuid4()}")
     parent_event_id: Optional[str] = None
     idempotency_key: Optional[str] = None
@@ -143,8 +202,7 @@ class SystemEvent(BaseModel):
     snapshots: Optional[EventSnapshots] = None
     
     meta: EventMeta = EventMeta()
-    
-    # Guard Result Helper (Not persisted directly, but used to build event)
+
 class GuardReceipt(BaseModel):
     decision: Decision
     reason_code: str

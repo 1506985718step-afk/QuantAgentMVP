@@ -3,7 +3,8 @@
 
 // Check if we are running in a mode that expects a Python backend
 // In a real build, this might be controlled by .env variables (VITE_USE_REAL_BACKEND)
-const USE_REAL_BACKEND_DEFAULT = true; // Default to true for production build
+// CHANGED: Default to false for MVP Simulation/Training mode
+const USE_REAL_BACKEND_DEFAULT = false; 
 
 export const config = {
     useRealBackend: USE_REAL_BACKEND_DEFAULT,

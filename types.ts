@@ -62,7 +62,8 @@ export enum EventType {
     POSITION_UPDATED = 'POSITION_UPDATED',
     EXIT_SIGNAL_EMITTED = 'EXIT_SIGNAL_EMITTED',
     DAILY_REPORT = 'DAILY_REPORT',
-    STRATEGY_UPDATED = 'STRATEGY_UPDATED'
+    STRATEGY_UPDATED = 'STRATEGY_UPDATED',
+    NEWS_UPDATE = 'NEWS_UPDATE' // New: News event
 }
 
 // Sub-structures for TradeIntent
@@ -186,6 +187,18 @@ export interface SystemEvent {
     };
 }
 
+// New: News Item Structure
+export interface NewsItem {
+    id: string;
+    title: string;
+    summary: string;
+    source: string;
+    time: string;
+    sentiment: 'positive' | 'negative' | 'neutral';
+    impact_score: number; // 0-100 impact on market
+    related_symbols?: string[];
+}
+
 export interface MarketSnapshot {
     replay_date?: string; // New: For replay mode
     index_price: number;
@@ -196,6 +209,10 @@ export interface MarketSnapshot {
     down_count: number;
     limit_up_count: number;   // 涨停家数
     limit_down_count: number; // 跌停家数
+    
+    // New: News Context
+    top_news?: NewsItem[];
+    ai_market_comment?: string; // AI generated macro view
 }
 
 // --- Analytics & Audit Types ---

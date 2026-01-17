@@ -1,30 +1,95 @@
+
 import uuid
-from datetime import datetime
+import asyncio
+import random
+from datetime import datetime, timedelta
 from typing import List, Dict, Any
-from ..core.contracts import TradeIntent, Side, IntentType, IntentSource, IntentVersion, OrderStatus
+from ..core.contracts import TradeIntent, Side, IntentType, IntentSource, IntentVersion, OrderStatus, StrategyConfig, TradeMetrics
 from ..services.llm_service import LLMService
+from ..services.news_service import news_service
+from ..services.memory_service import memory_service
 
 class StrategyAgent:
     def __init__(self):
         self.llm = LLMService()
-        # Default Watchlist (In real app, this comes from config or DB)
+        # Single Source of Truth for Watchlist
+        # Initial defaults
         self.watchlist = [
             {'symbol': '000001', 'name': '平安银行'},
             {'symbol': '600519', 'name': '贵州茅台'},
-            {'symbol': '002594', 'name': '比亚迪'}
+            {'symbol': '002594', 'name': '比亚迪'},
+            {'symbol': '300750', 'name': '宁德时代'},
+            {'symbol': '300059', 'name': '东方财富'},
+            {'symbol': '601138', 'name': '工业富联'} 
         ]
         self.cooldowns: Dict[str, datetime] = {}
         self.last_scan_time = None
 
-    async def run_cycle(self, market_snapshot: Any, market_data_map: Dict[str, Any], config: Any) -> List[TradeIntent]:
+    def get_watchlist(self) -> List[Dict[str, str]]:
+        return self.watchlist
+
+    def add_to_watchlist(self, symbol: str, name: str):
+        """Add a stock if it doesn't exist"""
+        if not any(x['symbol'] == symbol for x in self.watchlist):
+            self.watchlist.append({'symbol': symbol, 'name': name})
+
+    def remove_from_watchlist(self, symbol: str):
+        """Remove a stock by symbol"""
+        self.watchlist = [x for x in self.watchlist if x['symbol'] != symbol]
+
+    def set_watchlist(self, items: List[Dict[str, str]]):
+        """Replace the entire watchlist"""
+        self.watchlist = items
+
+    def adapt_config(self, current_config: StrategyConfig, metrics: TradeMetrics) -> StrategyConfig:
+        """
+        Dynamically adjust strategy parameters based on recent performance.
+        """
+        new_config = current_config.model_copy()
+        now_str = datetime.now().isoformat()
+        
+        # 1. DEFENSIVE MODE: High Drawdown (> 5%) or Low Win Rate (< 40%)
+        if metrics.max_drawdown > 0.05 or (metrics.total_trades > 5 and metrics.win_rate < 0.4):
+            new_config.vol_threshold = 2.0  
+            new_config.stop_loss_pct = 2.0  
+            new_config.take_profit_pct = 5.0 
+            new_config.update_reason = f"Defensive Mode: Drawdown {metrics.max_drawdown*100:.1f}%"
+            new_config.last_updated = now_str
+            return new_config
+
+        # 2. AGGRESSIVE MODE: High Win Rate (> 60%) and Low Drawdown
+        if metrics.total_trades > 5 and metrics.win_rate > 0.6 and metrics.max_drawdown < 0.03:
+            new_config.vol_threshold = 1.2  
+            new_config.stop_loss_pct = 3.5  
+            new_config.take_profit_pct = 12.0 
+            new_config.update_reason = f"Aggressive Mode: Win Rate {metrics.win_rate*100:.0f}%"
+            new_config.last_updated = now_str
+            return new_config
+
+        # 3. NEUTRAL MODE
+        if current_config.vol_threshold != 1.5:
+            new_config.vol_threshold = 1.5
+            new_config.stop_loss_pct = 3.0
+            new_config.take_profit_pct = 8.0
+            new_config.update_reason = "Neutral Mode: Baseline"
+            new_config.last_updated = now_str
+        
+        return new_config
+
+    async def run_cycle(self, market_snapshot: Any, market_data_map: Dict[str, Any], config: StrategyConfig) -> List[TradeIntent]:
         """
         Scan watchlist and return new intents (Async).
+        Parallelized LLM Analysis for performance.
         """
         intents = []
         now = datetime.now()
         
-        # Simple frequency control (e.g., max once per minute per symbol in this basic loop)
-        # For MVP, we allow every manual trigger.
+        # 0. Get Real-Time News Context
+        latest_news = news_service.get_latest_news()
+
+        # Prepare candidates for parallel processing
+        candidates = []
+        analysis_tasks = []
 
         for item in self.watchlist:
             symbol = item['symbol']
@@ -34,35 +99,64 @@ class StrategyAgent:
             if not data:
                 continue
 
-            # Skip if recently signaled (Cooldown 1 hour for MVP example)
-            # last_sig = self.cooldowns.get(symbol)
-            # if last_sig and (now - last_sig).total_seconds() < 3600:
-            #    continue
+            # Check cooldown (avoid spamming signals for same stock in 30 mins)
+            if symbol in self.cooldowns:
+                if now - self.cooldowns[symbol] < timedelta(minutes=30):
+                    continue
 
             # Mock Vol Ratio calculation (Real app needs history)
-            vol_ratio = 1.8 if data.get('volume', 0) > 0 else 0.0 # Placeholder
+            # In live mode, we rely on what 'sina_data' gives or calculate roughly
+            # Randomized to simulate varying market conditions (Range 1.2 - 2.2)
+            vol_ratio = 1.2 + (random.random() * 1.0) if data.get('volume', 0) > 0 else 0.0
             
-            # 1. Pre-filter (Save LLM tokens)
-            if data['change_pct'] < -2.0:
+            # 1. Pre-filter using Dynamic Config
+            if vol_ratio < config.vol_threshold:
+                 continue
+
+            if data['change_pct'] < -3.0:
                 continue # Don't buy dropping knives
+            
+            candidates.append({
+                "symbol": symbol,
+                "name": name,
+                "data": data,
+                "vol_ratio": vol_ratio
+            })
 
-            # 2. LLM Analysis
-            analysis = await self.llm.analyze(
-                symbol=symbol,
-                name=name,
-                price=data['price'],
-                change_pct=data['change_pct'],
-                vol_ratio=vol_ratio,
-                market_sentiment=market_snapshot.sentiment_score
+        # 2. Parallel LLM Analysis
+        for c in candidates:
+            # Retrieve Memory (RAG)
+            past_lessons = memory_service.get_context(c["symbol"])
+
+            # Create coroutine
+            task = self.llm.analyze(
+                symbol=c["symbol"],
+                name=c["name"],
+                price=c["data"]['price'],
+                change_pct=c["data"]['change_pct'],
+                vol_ratio=c["vol_ratio"],
+                market_sentiment=market_snapshot.sentiment_score,
+                news_context=latest_news,
+                past_lessons=past_lessons
             )
+            analysis_tasks.append(task)
 
+        if not analysis_tasks:
+            return []
+
+        # Wait for all analyses to complete concurrently
+        results = await asyncio.gather(*analysis_tasks)
+
+        # 3. Process Results
+        for i, analysis in enumerate(results):
+            c = candidates[i]
+            
             if analysis.get('signal'):
-                # Calculate Qty (Simple fixed value for MVP)
-                price = data['price']
+                # Calculate Qty
+                price = c["data"]['price']
                 if price <= 0.01: continue
                 
                 # Logic: Buy approx 50,000 CNY value
-                # Cap at 50000 RMB per trade or simple logic
                 raw_lots = int(50000 / (price * 100))
                 qty = raw_lots * 100
                 if qty == 0: qty = 100
@@ -71,16 +165,17 @@ class StrategyAgent:
                     intent_id=f"strat-{uuid.uuid4().hex[:8]}",
                     trade_day=now.strftime("%Y-%m-%d"),
                     session_id="python-backend",
-                    symbol=symbol,
-                    name=name,
+                    symbol=c["symbol"],
+                    name=c["name"],
                     side=Side.BUY,
                     intent_type=IntentType.BUY,
                     qty=qty,
                     price=price,
+                    # Use Dynamic Config for Risk Parameters
                     stop_loss=round(price * (1 - config.stop_loss_pct/100), 2),
                     take_profit=round(price * (1 + config.take_profit_pct/100), 2),
                     strategy_id="DeepSeek-V3-Quant",
-                    reason=analysis.get('reasoning', 'No reason'),
+                    reason=f"{analysis.get('reasoning')} (Vol={c['vol_ratio']:.2f})",
                     source=IntentSource(
                         source_event_id=f"scan-{uuid.uuid4().hex[:6]}",
                         trigger="signal"
@@ -91,6 +186,6 @@ class StrategyAgent:
                 )
                 
                 intents.append(intent)
-                self.cooldowns[symbol] = now
+                self.cooldowns[c["symbol"]] = now
                 
         return intents

@@ -1,3 +1,4 @@
+
 from typing import List, Tuple, Optional
 from .contracts import Position, TradeIntent, Side
 
@@ -22,8 +23,10 @@ class ExecutionEngine:
                 return False, f"Position {intent.symbol} not found"
             
             # STRICT T+1 CHECK
+            # Sellable quantity is determined at settlement. 
+            # New buys today have sellable=0.
             if pos.sellable < intent.qty:
-                return False, f"T+1 Violation: Sellable {pos.sellable} < Requested {intent.qty}"
+                return False, f"T+1 Violation: Sellable {pos.sellable} < Requested {intent.qty} (Total held: {pos.quantity})"
             
             return True, "OK"
 
@@ -68,7 +71,8 @@ class ExecutionEngine:
                     market_value=fill_price * intent.qty,
                     unrealized_pnl=-costs,
                     unrealized_pnl_pct=0.0,
-                    today_buys=1
+                    today_buys=1,
+                    days_held=0
                 )
                 positions.append(new_pos)
 
@@ -77,14 +81,16 @@ class ExecutionEngine:
             if idx >= 0:
                 p = positions[idx]
                 new_qty = p.quantity - intent.qty
-                new_sellable = p.sellable - intent.qty
+                # Reduce sellable quantity specifically
+                new_sellable = max(0, p.sellable - intent.qty)
                 
                 if new_qty <= 0:
                     positions.pop(idx)
                 else:
                     p.quantity = new_qty
-                    p.sellable = new_sellable # Reduce available
+                    p.sellable = new_sellable 
                     p.market_value = new_qty * fill_price
+                    p.current_price = fill_price
                     # PnL update
                     p.unrealized_pnl = p.market_value - (p.quantity * p.average_cost)
                     if p.quantity * p.average_cost > 0:
@@ -95,9 +101,10 @@ class ExecutionEngine:
     def settle_overnight(self, positions: List[Position]) -> List[Position]:
         """
         Simulate Day-End Settlement.
-        Rule: sellable becomes equal to quantity.
+        Rule: sellable becomes equal to quantity (T+1 unlocks).
         """
         for p in positions:
             p.sellable = p.quantity
             p.today_buys = 0
+            p.days_held += 1
         return positions

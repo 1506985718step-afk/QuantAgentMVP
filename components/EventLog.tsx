@@ -1,6 +1,7 @@
+
 import React, { useEffect, useRef } from 'react';
 import { AgentType, Decision, SystemEvent } from '../types';
-import { Terminal, Shield, Cpu, Activity, LogOut, Play, CalendarClock } from 'lucide-react';
+import { Terminal } from 'lucide-react';
 
 interface EventLogProps {
     events: SystemEvent[];
@@ -9,72 +10,47 @@ interface EventLogProps {
 const EventLog: React.FC<EventLogProps> = ({ events }) => {
     const scrollRef = useRef<HTMLDivElement>(null);
 
-    // Auto-scroll to bottom
     useEffect(() => {
         if (scrollRef.current) {
             scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
         }
     }, [events]);
 
-    const getIcon = (agent: AgentType) => {
-        switch (agent) {
-            case AgentType.RISK: return <Shield className="h-3 w-3" />;
-            case AgentType.STRATEGY: return <Cpu className="h-3 w-3" />;
-            case AgentType.EXIT: return <LogOut className="h-3 w-3" />;
-            case AgentType.EXECUTION: return <Play className="h-3 w-3" />;
-            default: return <Activity className="h-3 w-3" />;
-        }
-    };
-
     const getColor = (decision: Decision) => {
         switch (decision) {
-            case Decision.ALLOW: return 'text-emerald-400';
-            case Decision.BLOCK: return 'text-rose-400';
-            case Decision.EXECUTE: return 'text-blue-400';
-            default: return 'text-slate-400';
+            case Decision.ALLOW: return 'text-emerald-400 border-emerald-500/20 bg-emerald-500/5';
+            case Decision.BLOCK: return 'text-rose-400 border-rose-500/20 bg-rose-500/5';
+            case Decision.EXECUTE: return 'text-indigo-400 border-indigo-500/20 bg-indigo-500/5';
+            default: return 'text-zinc-500 border-zinc-700 bg-zinc-800/30';
         }
-    };
-
-    const formatTime = (ts: string) => {
-        const date = new Date(ts);
-        return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     };
 
     return (
-        <div className="flex h-full flex-col rounded-xl border border-slate-800 bg-slate-900 shadow-sm">
-            <div className="flex items-center gap-2 border-b border-slate-800 px-4 py-3">
-                <Terminal className="h-4 w-4 text-slate-500" />
-                <h3 className="text-sm font-semibold text-slate-300">系统事件流</h3>
-                <span className="ml-auto flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-2 w-2 rounded-full bg-emerald-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                </span>
+        <div className="flex h-[calc(100vh-8rem)] min-h-[400px] flex-col glass-panel rounded-lg overflow-hidden shadow-sm">
+            <div className="flex items-center gap-2 border-b border-white/5 bg-zinc-900/50 px-4 py-2.5 shrink-0">
+                <Terminal className="h-3.5 w-3.5 text-zinc-500" />
+                <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider">系统事件日志 (System Events)</h3>
             </div>
-            <div ref={scrollRef} className="flex-1 overflow-y-auto p-2">
-                <div className="space-y-1">
-                    {events.map((evt) => (
-                        <div key={evt.event_id} className="group flex items-start gap-3 rounded px-2 py-2 hover:bg-slate-800/50">
-                            <div className="mt-1 flex flex-col items-end min-w-[60px]">
-                                <span className="font-mono text-[10px] text-slate-500">{formatTime(evt.ts)}</span>
-                                <span className="text-[8px] text-slate-600 bg-slate-800 px-1 rounded">{evt.trade_day.slice(5)}</span>
-                            </div>
-                            <div className="flex-1">
-                                <div className="flex items-center gap-2">
-                                    <span className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider bg-slate-800 border border-slate-700 ${getColor(evt.decision)}`}>
-                                        {getIcon(evt.agent)}
-                                        {evt.agent}
-                                    </span>
-                                    <span className="text-xs font-medium text-slate-300">
-                                        {evt.type}
-                                    </span>
-                                </div>
-                                <p className="mt-1 text-xs text-slate-400 font-mono pl-1 border-l-2 border-slate-800 group-hover:border-slate-600 transition-colors">
-                                    {evt.reason_text}
-                                </p>
-                            </div>
+            
+            <div ref={scrollRef} className="flex-1 overflow-y-auto p-2 space-y-1 bg-[#050505]">
+                {events.map((evt) => (
+                    <div key={evt.event_id} className="flex gap-2.5 p-2 rounded hover:bg-white/[0.02] group text-xs font-mono transition-colors">
+                        <div className="text-zinc-600 shrink-0 w-[52px] text-right">
+                            {evt.ts.split('T')[1].split('.')[0]}
                         </div>
-                    ))}
-                </div>
+                        <div className="flex-1 min-w-0 border-l border-zinc-800 pl-2.5">
+                             <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                 <span className={`px-1.5 py-px rounded border text-[10px] font-bold uppercase ${getColor(evt.decision)}`}>
+                                     {evt.agent}
+                                 </span>
+                                 <span className="text-zinc-400 font-semibold">{evt.type}</span>
+                             </div>
+                             <div className="text-zinc-500 break-words leading-relaxed group-hover:text-zinc-300 transition-colors">
+                                 {evt.reason_text}
+                             </div>
+                        </div>
+                    </div>
+                ))}
             </div>
         </div>
     );

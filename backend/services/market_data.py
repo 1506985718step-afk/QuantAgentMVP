@@ -1,3 +1,4 @@
+
 import akshare as ak
 import pandas as pd
 from datetime import datetime, timedelta
@@ -11,14 +12,11 @@ class MarketDataService:
 
     def get_realtime_snapshot(self, symbols: List[str]) -> Dict[str, Any]:
         """
-        Fetch real-time quotes using AkShare (optimized wrapper around Sina/EastMoney).
-        Returns a dict mapped by symbol.
+        Fetch real-time quotes using AkShare/Sina.
         """
         try:
-            from .sina_data import sina_provider
-            # This is async in the other file, but we might need a sync wrapper here if called synchronously
-            # However, for now, we rely on the caller to use the async provider directly if needed.
-            # Or we just return empty if this is used strictly synchronously.
+            # We assume calling the async sina_provider from main flow, 
+            # this sync method is a placeholder or legacy.
             return {} 
         except Exception as e:
             print(f"Realtime Data Error: {e}")
@@ -27,43 +25,36 @@ class MarketDataService:
     @lru_cache(maxsize=20)
     def get_history_bars(self, symbol: str, days: int = 250) -> List[Dict[str, Any]]:
         """
-        Fetch historical daily bars for K-Line chart.
-        Defaults to ~1 year to cover 2024.
+        Fetch historical daily bars with indicators (MA, RSI, MACD, BOLL).
         """
         try:
-            # Fixed start date for "2024 Market Conditions" backtest
             start_date = "20240101"
             end_date = datetime.now().strftime("%Y%m%d")
             
             print(f"Fetching AkShare data for {symbol}...")
-            # stock_zh_a_hist: A股日线数据
             df = ak.stock_zh_a_hist(symbol=symbol, period="daily", start_date=start_date, end_date=end_date, adjust="qfq")
             
             if df is None or df.empty:
-                print(f"AkShare returned empty for {symbol}")
                 return []
 
-            # Clean up column names
+            # Clean columns
             df.rename(columns={
                 '日期': 'date', '开盘': 'open', '收盘': 'close', 
                 '最高': 'high', '最低': 'low', '成交量': 'volume'
             }, inplace=True)
 
-            # Ensure numeric types
             cols = ['open', 'close', 'high', 'low', 'volume']
             for col in cols:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
 
-            # --- Technical Indicators Calculation ---
+            # --- Technical Indicators ---
             
-            # 1. MA20
+            # 1. Moving Averages
             df['ma20'] = df['close'].rolling(window=20).mean()
-            
-            # 2. MA5 Volume
             df['ma5_vol'] = df['volume'].rolling(window=5).mean()
             
-            # 3. RSI (14)
+            # 2. RSI (14)
             delta = df['close'].diff()
             up = delta.clip(lower=0)
             down = -1 * delta.clip(upper=0)
@@ -72,10 +63,21 @@ class MarketDataService:
             rs = ema_up / ema_down
             df['rsi'] = 100 - (100 / (1 + rs))
 
+            # 3. MACD (12, 26, 9)
+            exp1 = df['close'].ewm(span=12, adjust=False).mean()
+            exp2 = df['close'].ewm(span=26, adjust=False).mean()
+            df['macd'] = exp1 - exp2
+            df['signal_line'] = df['macd'].ewm(span=9, adjust=False).mean()
+            df['histogram'] = df['macd'] - df['signal_line']
+
+            # 4. Bollinger Bands (20, 2)
+            df['boll_std'] = df['close'].rolling(window=20).std()
+            df['boll_upper'] = df['ma20'] + (df['boll_std'] * 2)
+            df['boll_lower'] = df['ma20'] - (df['boll_std'] * 2)
+
             # Fill NaN
             df.fillna(0, inplace=True)
 
-            # Take requested limit if needed
             if len(df) > days:
                 df = df.tail(days)
             
@@ -90,7 +92,11 @@ class MarketDataService:
                     "volume": float(row['volume']),
                     "ma20": float(row['ma20']),
                     "ma5_vol": float(row['ma5_vol']),
-                    "rsi": float(row['rsi'])
+                    "rsi": float(row['rsi']),
+                    # Add new indicators to output (though frontend might not render all yet)
+                    "macd": float(row['macd']),
+                    "boll_upper": float(row['boll_upper']),
+                    "boll_lower": float(row['boll_lower'])
                 })
                 
             return bars

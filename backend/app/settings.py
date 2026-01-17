@@ -1,3 +1,4 @@
+
 from pydantic_settings import BaseSettings
 from typing import Optional
 
@@ -11,7 +12,7 @@ class Settings(BaseSettings):
     
     # Session Context
     SESSION_ID: str = "sess_default"
-    TRADE_DAY: str = "2023-10-27"
+    TRADE_DAY: str = "2026-01-17"
     
     # Infrastructure
     REDIS_URL: Optional[str] = None

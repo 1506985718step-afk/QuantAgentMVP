@@ -1,15 +1,17 @@
+
 import { AgentType, Decision, EventType, IntentType, MarketSnapshot, Position, Side, SystemEvent, TradeIntent, AccountSummary, Severity, AuditReport, TradeMetrics } from '../types';
 
 // Initial State
 export const MOCK_MARKET: MarketSnapshot = {
-    index_price: 3250.45,
-    change_pct: 0.00,
-    sentiment_score: 50,
-    volatility_index: 15.0,
-    up_count: 2500,
-    down_count: 2500,
-    limit_up_count: 40,
-    limit_down_count: 5
+    index_price: 3450.80, // Slightly higher for 2026 context
+    change_pct: 0.45,
+    sentiment_score: 65,
+    volatility_index: 18.0,
+    up_count: 3200,
+    down_count: 1800,
+    limit_up_count: 55,
+    limit_down_count: 3,
+    replay_date: '2026-01-17' // Updated Date
 };
 
 // Start Fresh: 10,000 RMB Small Account
@@ -32,8 +34,8 @@ export const MOCK_INTENTS: TradeIntent[] = [];
 export const MOCK_EVENTS: SystemEvent[] = [
     {
         event_id: 'evt-init',
-        ts: new Date().toISOString(),
-        trade_day: '2025-01-01',
+        ts: new Date('2026-01-17T09:30:00').toISOString(), // Updated Date
+        trade_day: '2026-01-17',
         session_id: 'sess-init',
         trace_id: 'trace-init',
         parent_event_id: null,
@@ -49,12 +51,12 @@ export const MOCK_EVENTS: SystemEvent[] = [
 ];
 
 export const MOCK_AUDIT_REPORT: AuditReport = {
-    date: '2025-01-01',
+    date: '2026-01-17', // Updated Date
     score: 100,
     status: 'PASS',
     checks: [],
     ai_suggestions: [
-        "系统初始化完成。当前为小资金模式，建议严格遵守单笔 40% 仓位限制。"
+        "系统初始化完成。当前为 2026 年新规环境，建议严格遵守单笔 40% 仓位限制。"
     ]
 };
 

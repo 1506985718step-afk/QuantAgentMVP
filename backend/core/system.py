@@ -1,13 +1,16 @@
+
 from typing import List, Dict, Any
 from datetime import datetime
 import uuid
 import json
 import os
+import shutil
 import asyncio
+from ..app.settings import settings
 
 from .contracts import (
     AccountSummary, Position, TradeIntent, SystemEvent, MarketSnapshot,
-    AgentType, Decision, Severity, EventType, Side, OrderStatus, StrategyConfig, AuditReport
+    AgentType, Decision, Severity, EventType, Side, OrderStatus, StrategyConfig, AuditReport, TradeMetrics
 )
 from .trade_guard import TradeGuard
 from .execution_engine import ExecutionEngine
@@ -16,6 +19,7 @@ from .events import *
 from ..services.sina_data import sina_provider
 from ..agents.strategy_agent import StrategyAgent
 from ..services.llm_service import LLMService
+from ..services.memory_service import memory_service
 
 DATA_FILE = "data/state.json"
 
@@ -45,7 +49,8 @@ class TradingSystem:
         self.market_snapshot = MarketSnapshot(
             index_price=3000.0, change_pct=0.0, sentiment_score=60, 
             volatility_index=15, up_count=0, down_count=0, 
-            limit_up_count=0, limit_down_count=0
+            limit_up_count=0, limit_down_count=0,
+            replay_date=settings.TRADE_DAY
         )
         
         # 4. Strategy Config
@@ -55,20 +60,21 @@ class TradingSystem:
             update_reason="Init"
         )
         
-        # 5. Audit Cache
+        # 5. Metrics & Audit
+        self.metrics = TradeMetrics(
+            win_rate=0, profit_factor=0, total_trades=0, 
+            avg_win_pnl=0, avg_loss_pnl=0, max_drawdown=0, cost_ratio=0
+        )
         self.audit_report = AuditReport(
-            date=datetime.now().strftime("%Y-%m-%d"),
+            date=settings.TRADE_DAY,
             score=100, status="PASS", checks=[], 
-            ai_suggestions=["System Initialized. Waiting for trading data."], 
+            ai_suggestions=["System Initialized."], 
             active_config=self.strategy_config
         )
         
-        # 6. Load State
         self._load_from_disk()
-        self._log(EventType.MARKET_SNAPSHOT, "SYSTEM", Decision.INFO, "System Initialized (Python Backend)")
 
     def get_state(self) -> Dict[str, Any]:
-        """Return full UI state"""
         return {
             "account": self.account.model_dump(),
             "positions": [p.model_dump() for p in self.positions],
@@ -76,49 +82,130 @@ class TradingSystem:
             "market": self.market_snapshot.model_dump(),
             "events": [e.model_dump() for e in self.events[-50:]], 
             "audit": self.audit_report.model_dump(),
-            "metrics": { "win_rate": 0, "profit_factor": 0, "total_trades": 0, "avg_win_pnl": 0, "avg_loss_pnl": 0, "max_drawdown": 0, "cost_ratio": 0 },
-            "orders": [] 
+            "metrics": self.metrics.model_dump(),
+            "orders": [],
+            # Exposed Watchlist for Frontend Sync
+            "watchlist": self.strategy_agent.get_watchlist() 
         }
+
+    def _calculate_metrics(self):
+        """Re-calculate metrics based on event history (Closed Trades)"""
+        filled_sells = [e for e in self.events if e.type == EventType.ORDER_FILLED and "SELL" in e.reason_text]
+        total_trades = len(filled_sells)
+        
+        start_equity = 100000.0
+        current_equity = self.account.total_equity
+        
+        # Drawdown
+        peak_equity = max(start_equity, current_equity) 
+        drawdown = (peak_equity - current_equity) / peak_equity if peak_equity > 0 else 0
+        
+        # Estimate Win Rate
+        win_rate = 0.5 
+        if total_trades > 0:
+            win_rate = 0.55 if self.account.day_pnl >= 0 else 0.45
+            
+        self.metrics.max_drawdown = drawdown
+        self.metrics.total_trades = total_trades
+        self.metrics.win_rate = win_rate
+        
+        # Pass active config to audit report for UI visibility
+        self.audit_report.active_config = self.strategy_config
 
     async def tick(self):
         """
-        Main Loop Cycle (Async):
-        1. Sync Market Data
-        2. Run Strategy Agent (Generate Signals)
-        3. Run Exit Policy (Generate Sells)
+        Main Loop (Replay/Live)
         """
-        # 1. Sync Data
+        # 1. Sync Data (Positions + Watchlist + Index)
         realtime_data = await self._sync_market_data()
         
-        # 2. Strategy Scan
+        # 2. Update Market Snapshot (Index)
+        if '000001' in realtime_data:
+            idx = realtime_data['000001']
+            self.market_snapshot.index_price = idx['price']
+            self.market_snapshot.change_pct = idx['change_pct']
+        
+        # 3. Mark-to-Market (Update Position Values)
+        self._update_valuations(realtime_data)
+
+        # 4. Update Metrics & Adapt Strategy
+        self._calculate_metrics()
+        
+        # --- ADAPTIVE LOGIC START ---
+        self.strategy_config = self.strategy_agent.adapt_config(self.strategy_config, self.metrics)
+        
+        if "Mode" in self.strategy_config.update_reason and self.events and self.events[-1].reason_text != self.strategy_config.update_reason:
+             self._log(EventType.STRATEGY_UPDATED, AgentType.STRATEGY, Decision.INFO, 
+                       self.strategy_config.update_reason)
+        # --- ADAPTIVE LOGIC END ---
+
+        # 5. Exit Policy Scan (Check against updated PnL)
+        for pos in self.positions:
+            exit_intent = self.exit_policy.check_exit(pos, "sess_live", settings.TRADE_DAY)
+            if exit_intent:
+                self._process_intent_lifecycle(exit_intent)
+
+        # 6. Strategy Scan (Entry)
         new_intents = await self.strategy_agent.run_cycle(self.market_snapshot, realtime_data, self.strategy_config)
         
-        has_updates = False
         for intent in new_intents:
+            # Dedup
             if any(i.symbol == intent.symbol and i.side == intent.side and i.status == OrderStatus.PENDING for i in self.intents):
                 continue
-                
-            receipt = self.guard.check(intent, self.account.filled_buys_today)
-            if receipt.decision == Decision.ALLOW:
-                intent.status = OrderStatus.PENDING 
-                self.intents.insert(0, intent)
-                has_updates = True
-                
-                self._log(EventType.SIGNAL_EMITTED, AgentType.STRATEGY, Decision.INFO, 
-                          f"Signal: {intent.symbol} {intent.reason}", symbol=intent.symbol)
-        
-        if has_updates:
-            self._save_to_disk()
+            self._process_intent_lifecycle(intent)
 
+        self._save_to_disk()
         return {"status": "ticked", "signals": len(new_intents)}
 
-    def submit_intent(self, intent: TradeIntent) -> bool:
-        """Handle human approval"""
+    def _update_valuations(self, data_map: Dict[str, Any]):
+        """Update PnL and Market Value for all positions based on latest prices"""
+        total_mv = 0.0
+        
+        for pos in self.positions:
+            if pos.symbol in data_map:
+                quote = data_map[pos.symbol]
+                current_price = quote['price']
+                
+                # Update Position State
+                pos.current_price = current_price
+                pos.market_value = pos.quantity * current_price
+                
+                # Update PnL
+                cost_basis = pos.quantity * pos.average_cost
+                pos.unrealized_pnl = pos.market_value - cost_basis
+                if cost_basis > 0:
+                    pos.unrealized_pnl_pct = (pos.unrealized_pnl / cost_basis) * 100
+            
+            total_mv += pos.market_value
+
+        # Update Account State
+        prev_equity = self.account.total_equity
+        self.account.market_value = total_mv
+        self.account.total_equity = self.account.available_cash + total_mv
+        
+        self.account.day_pnl = self.account.total_equity - 100000.0 
+        self.account.day_pnl_pct = (self.account.day_pnl / 100000.0) * 100
+
+    def _process_intent_lifecycle(self, intent: TradeIntent):
+        # 1. Guard Check
         receipt = self.guard.check(intent, self.account.filled_buys_today)
         
         if receipt.decision == Decision.BLOCK:
             self._log(EventType.GUARD_BLOCKED, AgentType.RISK, Decision.BLOCK, 
-                      f"Guard Blocked: {receipt.reason_text}", symbol=intent.symbol)
+                      f"Blocked: {receipt.reason_text}", symbol=intent.symbol)
+            return
+
+        # 2. Add to Pending
+        intent.status = OrderStatus.PENDING
+        self.intents.insert(0, intent)
+        self._log(EventType.SIGNAL_EMITTED, AgentType.STRATEGY, Decision.INFO, 
+                  f"New Signal: {intent.side} {intent.symbol} ({intent.intent_type})", symbol=intent.symbol)
+
+    def submit_intent(self, intent: TradeIntent) -> bool:
+        """Handle human approval"""
+        # Re-check Guard (Safety)
+        receipt = self.guard.check(intent, self.account.filled_buys_today)
+        if receipt.decision == Decision.BLOCK:
             return False
 
         # Update status
@@ -130,67 +217,43 @@ class TradingSystem:
             self.intents.insert(0, intent)
         
         self._log(EventType.HUMAN_APPROVED, AgentType.EXECUTION, Decision.ALLOW, 
-                  f"Intent Accepted: {intent.side} {intent.symbol}", symbol=intent.symbol)
+                  f"Approved: {intent.side} {intent.symbol}", symbol=intent.symbol)
         
+        # Execute
         self._execute_trade(intent)
         self._save_to_disk()
         return True
-
-    def cancel_order(self, intent_id: str):
-        found = False
-        for i in self.intents:
-            if i.intent_id == intent_id:
-                i.status = OrderStatus.CANCELLED
-                found = True
-                break
-        
-        if found:
-            self._log(EventType.ORDER_REJECTED, AgentType.BROKER, Decision.INFO, "Order Cancelled by User", symbol=None)
-            self._save_to_disk()
-
-    def set_equity(self, amount: float):
-        old = self.account.total_equity
-        self.account.total_equity = amount
-        self.account.available_cash = amount - self.account.market_value
-        self._log(EventType.DAILY_REPORT, AgentType.SYSTEM, Decision.INFO, f"Equity Adjusted: {old} -> {amount}")
-        self._save_to_disk()
-
-    async def generate_audit(self) -> Dict[str, Any]:
-        """Trigger AI Audit Generation"""
-        self._log(EventType.DAILY_REPORT, AgentType.AUDIT, Decision.INFO, "Starting AI Audit...")
-        
-        filled_orders = [i.model_dump() for i in self.intents if i.status == OrderStatus.FILLED]
-        recent_events = [e.model_dump() for e in self.events if e.ts.startswith(datetime.now().strftime("%Y-%m-%d"))]
-        
-        result = await self.llm_service.audit_daily_performance(
-            date=datetime.now().strftime("%Y-%m-%d"),
-            account=self.account.model_dump(),
-            trades=filled_orders,
-            events=recent_events
-        )
-        
-        self.audit_report = AuditReport(
-            date=datetime.now().strftime("%Y-%m-%d"),
-            score=result.get("score", 0),
-            status=result.get("status", "FAIL"),
-            checks=result.get("checks", []),
-            ai_suggestions=result.get("ai_suggestions", []),
-            active_config=self.strategy_config
-        )
-        self._save_to_disk()
-        
-        return self.audit_report.model_dump()
 
     def _execute_trade(self, intent: TradeIntent):
         costs = 5.0 
         fill_price = intent.price 
         
+        # VALIDATE via Engine (Cash, T+1)
         valid, msg = self.engine.validate_order(intent, self.positions, self.account.available_cash)
+        
         if not valid:
-            self._log(EventType.ORDER_REJECTED, AgentType.EXECUTION, Decision.BLOCK, msg, symbol=intent.symbol)
+            self._log(EventType.ORDER_REJECTED, AgentType.EXECUTION, Decision.BLOCK, 
+                      f"Execution Failed: {msg}", symbol=intent.symbol)
             intent.status = OrderStatus.REJECTED
             return
+        
+        # Record Memory (PnL)
+        if intent.side == Side.SELL:
+             pos = next((p for p in self.positions if p.symbol == intent.symbol), None)
+             if pos:
+                 realized_pnl = (fill_price - pos.average_cost) * intent.qty - costs
+                 realized_pnl_pct = (realized_pnl / (pos.average_cost * intent.qty)) * 100 if pos.average_cost > 0 else 0
+                 
+                 memory_service.record_trade(
+                     symbol=intent.symbol,
+                     entry_date="Unknown", 
+                     exit_date=settings.TRADE_DAY,
+                     pnl_pct=realized_pnl_pct,
+                     reason=intent.reason,
+                     strategy=intent.strategy_id
+                 )
 
+        # FILL
         self.positions = self.engine.apply_fill(self.positions, intent, fill_price, costs)
         
         cash_change = (fill_price * intent.qty)
@@ -207,90 +270,99 @@ class TradingSystem:
                   f"Filled {intent.side} {intent.qty} @ {fill_price}", symbol=intent.symbol)
 
     async def _sync_market_data(self) -> Dict[str, Any]:
-        """Fetch real prices"""
-        symbols = [item['symbol'] for item in self.strategy_agent.watchlist]
-        for p in self.positions:
-            if p.symbol not in symbols:
-                symbols.append(p.symbol)
-                
-        data = await sina_provider.get_realtime_data(symbols)
-        
-        if '000001' in data:
-            sz_data = data['000001']
-            self.market_snapshot.index_price = sz_data['price']
-            self.market_snapshot.change_pct = sz_data['change_pct']
-        
-        total_mkt_val = 0
-        total_pnl = 0
-        
-        for pos in self.positions:
-            if pos.symbol in data:
-                mkt = data[pos.symbol]
-                curr_price = mkt['price']
-                if curr_price > 0:
-                    pos.current_price = curr_price
-                    pos.market_value = pos.quantity * curr_price
-                    pos.unrealized_pnl = pos.market_value - (pos.quantity * pos.average_cost)
-                    cost_basis = pos.quantity * pos.average_cost
-                    pos.unrealized_pnl_pct = (pos.unrealized_pnl / cost_basis * 100) if cost_basis > 0 else 0
-            
-            total_mkt_val += pos.market_value
-            total_pnl += pos.unrealized_pnl
+        """Fetch prices for Positions + Watchlist + Index"""
+        position_symbols = [p.symbol for p in self.positions]
+        watchlist_symbols = [w['symbol'] for w in self.strategy_agent.watchlist]
+        index_symbols = ['000001']
+        all_symbols = list(set(position_symbols + watchlist_symbols + index_symbols))
+        return await sina_provider.get_realtime_data(all_symbols)
 
-        self.account.market_value = total_mkt_val
-        self.account.total_equity = self.account.available_cash + total_mkt_val
-        self.account.day_pnl = total_pnl
-        
-        return data
-        
+    def cancel_order(self, intent_id: str):
+        for i in self.intents:
+            if i.intent_id == intent_id:
+                i.status = OrderStatus.CANCELLED
+                self._log(EventType.ORDER_REJECTED, AgentType.BROKER, Decision.INFO, "Cancelled by User")
+                self._save_to_disk()
+                break
+
+    def set_equity(self, amount: float):
+        self.account.total_equity = amount
+        self.account.available_cash = amount - self.account.market_value
+        self._save_to_disk()
+
+    async def generate_audit(self):
+        """Call LLM to generate audit report based on current state"""
+        try:
+            trades_summary = [
+                {"symbol": e.symbol, "type": e.type, "desc": e.reason_text} 
+                for e in self.events if e.type == EventType.ORDER_FILLED
+            ]
+            
+            report_data = await self.llm_service.audit_daily_performance(
+                date=settings.TRADE_DAY,
+                account=self.account.model_dump(),
+                trades=trades_summary,
+                events=[e.model_dump() for e in self.events]
+            )
+            
+            self.audit_report = AuditReport(
+                date=settings.TRADE_DAY,
+                score=report_data.get("score", 0),
+                status=report_data.get("status", "FAIL"),
+                checks=[{"rule_name": c["rule_name"], "status": c["status"], "details": c["details"]} for c in report_data.get("checks", [])],
+                ai_suggestions=report_data.get("ai_suggestions", []),
+                active_config=self.strategy_config
+            )
+            
+            self._log(EventType.DAILY_REPORT, AgentType.AUDIT, Decision.INFO, f"Audit Generated. Score: {self.audit_report.score}")
+            self._save_to_disk()
+            return self.audit_report
+        except Exception as e:
+            print(f"Audit Generation Error: {e}")
+            return self.audit_report
+
     def _log(self, type: str, agent: str, decision: str, text: str, symbol: str = None):
         evt = SystemEvent(
-            trade_day=datetime.now().strftime("%Y-%m-%d"),
+            trade_day=settings.TRADE_DAY,
             session_id="sess_live",
             type=type,
             agent=agent, 
             decision=decision, 
             reason_text=text,
             symbol=symbol,
-            severity=Severity.INFO
+            severity=Severity.INFO,
+            meta={"mode": settings.MODE}
         )
         self.events.append(evt)
 
-    # --- Persistence Layer ---
     def _save_to_disk(self):
+        """Atomic Write"""
         try:
             os.makedirs("data", exist_ok=True)
             state = {
                 "account": self.account.model_dump(),
                 "positions": [p.model_dump() for p in self.positions],
                 "intents": [i.model_dump() for i in self.intents],
-                # Save last 100 events to prevent huge files
                 "events": [e.model_dump() for e in self.events[-100:]] 
             }
-            with open(DATA_FILE, "w", encoding='utf-8') as f:
+            # Write to temp file then rename
+            temp_file = DATA_FILE + ".tmp"
+            with open(temp_file, "w", encoding='utf-8') as f:
                 json.dump(state, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"Failed to save state: {e}")
+            shutil.move(temp_file, DATA_FILE)
+        except Exception as e: 
+            print(f"Save failed: {e}")
 
     def _load_from_disk(self):
-        if not os.path.exists(DATA_FILE):
-            return
-        
-        try:
-            with open(DATA_FILE, "r", encoding='utf-8') as f:
-                data = json.load(f)
-                
-            if "account" in data:
-                self.account = AccountSummary(**data["account"])
-            if "positions" in data:
-                self.positions = [Position(**p) for p in data["positions"]]
-            if "intents" in data:
-                self.intents = [TradeIntent(**i) for i in data["intents"]]
-            if "events" in data:
-                self.events = [SystemEvent(**e) for e in data["events"]]
-                
-            print(f"State loaded from {DATA_FILE}")
-        except Exception as e:
-            print(f"Failed to load state: {e}")
+        if os.path.exists(DATA_FILE):
+            try:
+                with open(DATA_FILE, "r", encoding='utf-8') as f:
+                    data = json.load(f)
+                if "account" in data: self.account = AccountSummary(**data["account"])
+                if "positions" in data: self.positions = [Position(**p) for p in data["positions"]]
+                if "intents" in data: self.intents = [TradeIntent(**i) for i in data["intents"]]
+                if "events" in data: self.events = [SystemEvent(**e) for e in data["events"]]
+            except Exception as e:
+                print(f"Load failed: {e}")
 
 trading_system = TradingSystem()

@@ -1,36 +1,55 @@
 
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <meta name="theme-color" content="#0f172a" />
+    <meta name="theme-color" content="#09090b" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>QuantAgent MVP</title>
-    <!-- Use Tailwind via CDN for simplicity in MVP, or build it via postcss if preferred. Keeping CDN for now is fine. -->
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-      /* Mobile optimization: Prevent pull-to-refresh on mobile to feel native */
-      body { overscroll-behavior-y: none; }
-      ::-webkit-scrollbar { width: 4px; height: 4px; }
-      ::-webkit-scrollbar-track { background: #0f172a; }
-      ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+      body { 
+        overscroll-behavior-y: none; 
+        background-color: #09090b; /* Zinc 950 */
+      }
+      /* Sleek Scrollbar */
+      ::-webkit-scrollbar { width: 6px; height: 6px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: #27272a; border-radius: 3px; }
+      ::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
+      
+      /* Utilities */
+      .glass-panel {
+        background: rgba(24, 24, 27, 0.6);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .glass-card {
+        background: linear-gradient(180deg, rgba(39, 39, 42, 0.4) 0%, rgba(24, 24, 27, 0.4) 100%);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+      }
+      .font-numeric {
+        font-variant-numeric: tabular-nums;
+      }
     </style>
   <script type="importmap">
 {
   "imports": {
-    "react": "https://esm.sh/react@^19.2.3",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
-    "react/": "https://esm.sh/react@^19.2.3/",
-    "lucide-react": "https://esm.sh/lucide-react@^0.562.0",
-    "vite": "https://esm.sh/vite@^7.3.1",
-    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2"
+    "react": "https://esm.sh/react@^18.2.0",
+    "react-dom/": "https://esm.sh/react-dom@^18.2.0/",
+    "react/": "https://esm.sh/react@^18.2.0/",
+    "lucide-react": "https://esm.sh/lucide-react@^0.344.0",
+    "lightweight-charts": "https://esm.sh/lightweight-charts@4.1.3",
+    "vite": "https://esm.sh/vite@^5.1.6",
+    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^4.2.1"
   }
 }
 </script>
 </head>
-  <body class="bg-slate-950 text-slate-200 antialiased selection:bg-emerald-500/30">
+  <body class="bg-[#09090b] text-zinc-200 antialiased selection:bg-indigo-500/30 font-sans">
     <div id="root"></div>
     <script type="module" src="/index.tsx"></script>
   </body>

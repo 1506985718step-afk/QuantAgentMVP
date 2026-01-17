@@ -1,4 +1,5 @@
-import { BarData, EMPTY_DATA, FALLBACK_MOCK_DATA } from './historicalData';
+
+import { BarData, getMockBars } from './historicalData';
 import { MarketSnapshot } from '../types';
 import { config } from './config';
 
@@ -10,13 +11,20 @@ export interface IDataProvider {
 export class HybridDataProvider implements IDataProvider {
     
     async getBars(symbol: string, limit: number = 300): Promise<BarData[]> {
-        // Always try to fetch from the Python backend first to get real AkShare data.
+        // If explicitly in Simulation/Mock mode, use the Vintage Data immediately.
+        // This ensures the "Training Board" always has high-quality data to replay.
+        if (!config.useRealBackend) {
+            // Now generates symbol-specific mock data
+            const allBars = getMockBars(symbol);
+            return allBars; // In mock, we usually return full history so replay works from start
+        }
+
+        // Only try to fetch from backend if in Real Backend mode
         const apiBase = config.apiBaseUrl || 'http://localhost:8000/api';
 
         try {
-            // Set a timeout to prevent hanging indefinitely
             const controller = new AbortController();
-            const id = setTimeout(() => controller.abort(), 5000);
+            const id = setTimeout(() => controller.abort(), 3000);
 
             const res = await fetch(`${apiBase}/market/history/${symbol}`, {
                 signal: controller.signal
@@ -28,17 +36,13 @@ export class HybridDataProvider implements IDataProvider {
                 if (Array.isArray(data) && data.length > 0) {
                     return data.slice(-limit);
                 }
-                console.warn(`Backend returned empty data for ${symbol}.`);
-            } else {
-                console.warn(`Backend returned ${res.status} for ${symbol}`);
             }
         } catch (e) {
-            console.warn(`Failed to connect to Python Backend for ${symbol}. Using Fallback Mock Data.`);
+            console.warn(`Real Backend unreachable. Switching to Training Data.`);
         }
 
-        // Return fallback data if real data fetch failed, to keep the UI functional
-        // This ensures the "Critical: Could not fetch" error doesn't halt the app.
-        return FALLBACK_MOCK_DATA;
+        // Fallback for failed real request
+        return getMockBars(symbol);
     }
 
     async getSnapshot(symbol: string): Promise<MarketSnapshot> {

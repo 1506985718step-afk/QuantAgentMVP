@@ -1,8 +1,9 @@
+
 from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.concurrency import run_in_threadpool
+from fastapi.concurrency import run_inthreadpool
 from pydantic import BaseModel
-from typing import List
+from typing import List, Dict
 from .settings import settings
 from ..core.system import trading_system
 from ..core.contracts import TradeIntent
@@ -29,6 +30,20 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     history: List[ChatMessage]
 
+class WatchlistAddRequest(BaseModel):
+    symbol: str
+    name: str
+
+class WatchlistRemoveRequest(BaseModel):
+    symbol: str
+
+class WatchlistItem(BaseModel):
+    symbol: str
+    name: str
+
+class WatchlistSetRequest(BaseModel):
+    items: List[WatchlistItem]
+
 @app.get("/")
 async def read_root():
     return {"status": "online", "mode": "real_backend"}
@@ -45,11 +60,28 @@ async def get_market_history(symbol: str):
     Uses run_in_threadpool to prevent blocking the event loop during AkShare sync calls.
     """
     try:
-        data = await run_in_threadpool(market_data_service.get_history_bars, symbol)
+        data = await run_inthreadpool(market_data_service.get_history_bars, symbol)
         return data
     except Exception as e:
         print(f"Error fetching history for {symbol}: {e}")
         return []
+
+@app.post("/api/watchlist/add")
+async def add_watchlist(req: WatchlistAddRequest):
+    trading_system.strategy_agent.add_to_watchlist(req.symbol, req.name)
+    return {"status": "added", "watchlist": trading_system.strategy_agent.get_watchlist()}
+
+@app.post("/api/watchlist/remove")
+async def remove_watchlist(req: WatchlistRemoveRequest):
+    trading_system.strategy_agent.remove_from_watchlist(req.symbol)
+    return {"status": "removed", "watchlist": trading_system.strategy_agent.get_watchlist()}
+
+@app.post("/api/watchlist/set")
+async def set_watchlist(req: WatchlistSetRequest):
+    # Convert Pydantic models to dicts
+    items_dict = [{"symbol": item.symbol, "name": item.name} for item in req.items]
+    trading_system.strategy_agent.set_watchlist(items_dict)
+    return {"status": "set", "watchlist": trading_system.strategy_agent.get_watchlist()}
 
 @app.post("/api/intent/approve")
 async def approve_intent(intent: TradeIntent):
@@ -103,3 +135,8 @@ async def debug_tick():
     """Trigger a strategy cycle"""
     result = await trading_system.tick()
     return result
+
+if __name__ == "__main__":
+    import uvicorn
+    # Allow running directly: python -m backend.app.main
+    uvicorn.run("backend.app.main:app", host="0.0.0.0", port=8000, reload=True)

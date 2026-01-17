@@ -1,0 +1,45 @@
+
+version: '3.8'
+
+services:
+  # Python Backend Service
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: quant_backend
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount data volume for persistence
+      - ./data:/app/data
+      # Mount source for hot reload (optional, for dev)
+      - ./backend:/app/backend
+    environment:
+      - MODE=live
+      - TZ=Asia/Shanghai
+      # Pass your DeepSeek API Key here
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+    restart: unless-stopped
+
+  # Frontend Service (Vite Development Server for MVP)
+  # In production, this should be an Nginx container serving static build files
+  frontend:
+    image: node:18-alpine
+    container_name: quant_frontend
+    working_dir: /app
+    volumes:
+      - ./:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    # Command to install deps and run vite host
+    command: >
+      sh -c "npm install && npm run dev -- --host"
+    environment:
+      - VITE_API_BASE=http://backend:8000
+    depends_on:
+      - backend
+
+volumes:
+  data:

@@ -21,6 +21,9 @@ class ExitPolicy:
         }
 
     def check_exit(self, position: Position, session_id: str, trade_day: str) -> Optional[TradeIntent]:
+        """
+        Constraint #6: ExitPolicy Only generates Intent. Does not execute.
+        """
         # Convert thresholds to percentage
         tp_threshold = self.config["take_profit_pct"] * 100
         sl_threshold = self.config["stop_loss_pct"] * 100
@@ -47,10 +50,8 @@ class ExitPolicy:
                  session_id, trade_day
              )
         
-        # 3. Time Stop (Strict Definition)
-        # Evaluated when days_held >= time_stop_days.
-        # This check runs during the "next day" scan.
-        # If today is T+2 (held=2) and performance was bad at T+1 close (implied by current state if early in day), we sell.
+        # 3. Time Stop (Strict Definition: T+1 Close Eval -> T+2 Action)
+        # Only if we held it for > 1 day and returns are flat.
         if position.days_held > self.config["time_stop_days"] and position.unrealized_pnl_pct < time_stop_threshold:
              return self._create_intent(
                  position,

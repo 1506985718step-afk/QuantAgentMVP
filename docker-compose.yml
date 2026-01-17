@@ -5,41 +5,41 @@ services:
   # Python Backend Service
   backend:
     build: 
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: quant_backend
-    ports:
-      - "8000:8000"
     volumes:
-      # Mount data volume for persistence
-      - ./data:/app/data
-      # Mount source for hot reload (optional, for dev)
-      - ./backend:/app/backend
+      # Data Persistence: Host Directory Mounting for easier backup
+      # Now you can simply backup the './data_backup' folder on your server
+      - ./data_backup:/app/data
     environment:
-      - MODE=live
+      - MODE=${MODE:-live}
       - TZ=Asia/Shanghai
-      # Pass your DeepSeek API Key here
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - SECRET_KEY=${SECRET_KEY}
+      # Admin Credentials (defined in .env)
+      - ADMIN_USER=${ADMIN_USER:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
+      # Security: Allow specific CORS origins (comma separated)
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost}
     restart: unless-stopped
+    networks:
+      - quant_net
 
-  # Frontend Service (Vite Development Server for MVP)
-  # In production, this should be an Nginx container serving static build files
+  # Nginx Frontend & Proxy
   frontend:
-    image: node:18-alpine
-    container_name: quant_frontend
-    working_dir: /app
-    volumes:
-      - ./:/app
-      - /app/node_modules
+    build:
+      context: .
+      dockerfile: frontend.Dockerfile
+    container_name: quant_nginx
     ports:
-      - "3000:3000"
-    # Command to install deps and run vite host
-    command: >
-      sh -c "npm install && npm run dev -- --host"
-    environment:
-      - VITE_API_BASE=http://backend:8000
+      - "80:80"
     depends_on:
       - backend
+    restart: unless-stopped
+    networks:
+      - quant_net
 
-volumes:
-  data:
+networks:
+  quant_net:
+    driver: bridge

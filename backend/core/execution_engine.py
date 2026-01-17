@@ -22,7 +22,7 @@ class ExecutionEngine:
             if not pos:
                 return False, f"Position {intent.symbol} not found"
             
-            # STRICT T+1 CHECK
+            # Constraint #5.2: STRICT T+1 CHECK
             # Sellable quantity is determined at settlement. 
             # New buys today have sellable=0.
             if pos.sellable < intent.qty:

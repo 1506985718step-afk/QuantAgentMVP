@@ -3,6 +3,7 @@ import {
     AccountSummary, Position, TradeIntent, SystemEvent, MarketSnapshot, 
     AuditReport, TradeMetrics, BrokerOrder
 } from '../types';
+import { authService } from './authService';
 
 const API_BASE = 'http://localhost:8000';
 
@@ -22,7 +23,6 @@ class APIBackendService {
             down_count: 0,
             limit_up_count: 0,
             limit_down_count: 0,
-            // Removed duplicate properties that were causing errors
             replay_date: '2026-01-17' // Default to requested date
         } as MarketSnapshot,
         account: {
@@ -66,10 +66,23 @@ class APIBackendService {
         this.fetchState();
         this.pollInterval = setInterval(() => this.fetchState(), 2000);
     }
+    
+    private getHeaders() {
+        const token = authService.getToken();
+        return token ? { 'Authorization': `Bearer ${token}` } : {};
+    }
 
     private async fetchState() {
+        if (!authService.isAuthenticated()) return; // Stop polling if not logged in
+
         try {
-            const res = await fetch(`${API_BASE}/api/state`);
+            const res = await fetch(`${API_BASE}/api/state`, {
+                headers: this.getHeaders()
+            });
+            if (res.status === 401) {
+                authService.logout();
+                return;
+            }
             if (!res.ok) throw new Error("API Error");
             const data = await res.json();
             
@@ -115,7 +128,10 @@ class APIBackendService {
         try {
             await fetch(`${API_BASE}/api/intent/approve`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json',
+                    ...this.getHeaders()
+                },
                 body: JSON.stringify(payload)
             });
             this.fetchState(); // Immediate refresh
@@ -127,19 +143,28 @@ class APIBackendService {
     rejectSignal(id: string) {
         // Optimistic UI update could be done here
         console.log("Reject logic sent to backend");
-        fetch(`${API_BASE}/api/intent/reject?intent_id=${id}`, { method: 'POST' }).catch(console.error);
+        fetch(`${API_BASE}/api/intent/reject?intent_id=${id}`, { 
+            method: 'POST',
+            headers: this.getHeaders() 
+        }).catch(console.error);
     }
 
     async nextDay() {
         try {
-            await fetch(`${API_BASE}/api/debug/next_day`, { method: 'POST' });
+            await fetch(`${API_BASE}/api/debug/next_day`, { 
+                method: 'POST',
+                headers: this.getHeaders()
+            });
             this.fetchState();
         } catch (e) {}
     }
     
     async cancelOrder(id: string) {
         try {
-            await fetch(`${API_BASE}/api/orders/cancel?intent_id=${id}`, { method: 'POST' });
+            await fetch(`${API_BASE}/api/orders/cancel?intent_id=${id}`, { 
+                method: 'POST',
+                headers: this.getHeaders()
+            });
             this.fetchState();
         } catch (e) {
             console.error("Failed to cancel order:", e);
@@ -156,7 +181,10 @@ class APIBackendService {
         try {
             await fetch(`${API_BASE}/api/account/equity`, { 
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json',
+                    ...this.getHeaders()
+                },
                 body: JSON.stringify({ amount })
             });
             this.fetchState();
@@ -176,7 +204,10 @@ class APIBackendService {
         try {
             await fetch(`${API_BASE}/api/watchlist/add`, { 
                 method: 'POST', 
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json',
+                    ...this.getHeaders()
+                },
                 body: JSON.stringify({ symbol, name })
             });
             this.fetchState();
@@ -190,7 +221,10 @@ class APIBackendService {
         try {
             await fetch(`${API_BASE}/api/watchlist/remove`, { 
                 method: 'POST', 
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json',
+                    ...this.getHeaders()
+                },
                 body: JSON.stringify({ symbol })
             });
             this.fetchState();
@@ -204,7 +238,10 @@ class APIBackendService {
         try {
             await fetch(`${API_BASE}/api/watchlist/set`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json',
+                    ...this.getHeaders()
+                },
                 body: JSON.stringify({ items })
             });
             this.fetchState();

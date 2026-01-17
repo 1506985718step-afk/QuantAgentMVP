@@ -47,9 +47,9 @@ const AccountSummary: React.FC<AccountSummaryProps> = ({ data, onUpdateEquity })
         if (e.key === 'Escape') handleCancel();
     };
 
-    // Card styling with better responsive padding/height
-    const cardClass = "glass-card rounded-lg p-4 sm:p-5 flex flex-col justify-between h-full min-h-[110px] transition-all hover:border-white/10 group relative overflow-hidden";
-    const labelClass = "text-[10px] sm:text-[11px] font-medium text-zinc-500 uppercase tracking-wider mb-2 flex items-center gap-1.5 truncate";
+    // Compact Card styling
+    const cardClass = "glass-card rounded-lg p-3 sm:p-4 flex flex-col justify-between h-full min-h-[85px] transition-all hover:border-white/10 group relative overflow-hidden";
+    const labelClass = "text-[10px] font-bold text-zinc-500 uppercase tracking-wider mb-0.5 flex items-center gap-1.5 truncate";
 
     return (
         <>
@@ -62,7 +62,7 @@ const AccountSummary: React.FC<AccountSummaryProps> = ({ data, onUpdateEquity })
                     {!isEditing && (
                         <button 
                             onClick={() => setIsEditing(true)}
-                            className="text-zinc-600 hover:text-indigo-400 transition-colors opacity-0 group-hover:opacity-100"
+                            className="text-zinc-600 hover:text-indigo-400 transition-colors opacity-0 group-hover:opacity-100 scale-75"
                             title="修改初始资金"
                         >
                             <Pencil className="h-3 w-3" />
@@ -73,7 +73,7 @@ const AccountSummary: React.FC<AccountSummaryProps> = ({ data, onUpdateEquity })
                 {isEditing ? (
                     <div className="flex flex-col mt-auto w-full relative">
                         <div className="flex items-baseline gap-1">
-                             <span className="text-zinc-500 font-mono text-xl">¥</span>
+                             <span className="text-zinc-500 font-mono text-lg">¥</span>
                              <input 
                                 ref={inputRef}
                                 type="number" 
@@ -81,12 +81,12 @@ const AccountSummary: React.FC<AccountSummaryProps> = ({ data, onUpdateEquity })
                                 onChange={(e) => setInputValue(e.target.value)}
                                 onKeyDown={handleKeyDown}
                                 onBlur={handleSave}
-                                className="w-full bg-zinc-900/50 border border-indigo-500/50 rounded px-2 py-1 text-xl font-bold text-white font-mono focus:outline-none focus:ring-1 focus:ring-indigo-500/50"
+                                className="w-full bg-zinc-900/50 border border-indigo-500/50 rounded px-2 py-0.5 text-lg font-bold text-white font-mono focus:outline-none focus:ring-1 focus:ring-indigo-500/50"
                             />
                         </div>
-                        <div className="text-[10px] text-zinc-500 mt-1 flex gap-2">
-                            <span>按 Enter 保存</span>
-                            <span>按 Esc 取消</span>
+                        <div className="text-[9px] text-zinc-500 mt-1 flex gap-2">
+                            <span>Enter 保存</span>
+                            <span>Esc 取消</span>
                         </div>
                     </div>
                 ) : (
@@ -94,8 +94,8 @@ const AccountSummary: React.FC<AccountSummaryProps> = ({ data, onUpdateEquity })
                         onClick={() => setIsEditing(true)} 
                         className="mt-auto cursor-pointer"
                     >
-                        <div className="text-2xl sm:text-3xl font-bold text-zinc-100 font-mono tracking-tight tabular-nums truncate hover:text-indigo-200 transition-colors">
-                            <span className="text-zinc-500 text-lg mr-1 align-baseline">¥</span>
+                        <div className="text-xl sm:text-2xl font-bold text-zinc-100 font-mono tracking-tight tabular-nums truncate hover:text-indigo-200 transition-colors">
+                            <span className="text-zinc-500 text-base mr-1 align-baseline">¥</span>
                             {(data.total_equity || 0).toLocaleString()}
                         </div>
                     </div>
@@ -106,8 +106,8 @@ const AccountSummary: React.FC<AccountSummaryProps> = ({ data, onUpdateEquity })
             <div className={cardClass}>
                 <div className={labelClass}>可用资金 (Cash)</div>
                 <div className="mt-auto truncate">
-                    <div className="text-xl sm:text-2xl font-bold text-zinc-300 font-mono tabular-nums truncate">
-                        <span className="text-zinc-600 text-base mr-1">¥</span>
+                    <div className="text-lg sm:text-xl font-bold text-zinc-300 font-mono tabular-nums truncate">
+                        <span className="text-zinc-600 text-sm mr-1">¥</span>
                         {(data.available_cash || 0).toLocaleString()}
                     </div>
                 </div>
@@ -122,7 +122,7 @@ const AccountSummary: React.FC<AccountSummaryProps> = ({ data, onUpdateEquity })
                             <div className={`text-lg sm:text-xl font-bold font-mono tabular-nums leading-none ${isPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
                                 {isPositive ? '+' : ''}{(data.day_pnl || 0).toLocaleString()}
                             </div>
-                            <div className={`text-xs font-mono mt-1 ${isPositive ? 'text-emerald-500/60' : 'text-rose-500/60'}`}>
+                            <div className={`text-[10px] font-mono mt-1 ${isPositive ? 'text-emerald-500/60' : 'text-rose-500/60'}`}>
                                 {isPositive ? '+' : ''}{data.day_pnl_pct || 0}%
                             </div>
                         </div>
@@ -135,12 +135,12 @@ const AccountSummary: React.FC<AccountSummaryProps> = ({ data, onUpdateEquity })
                                  {[...Array(5)].map((_, i) => (
                                      <div 
                                         key={i} 
-                                        className={`h-1.5 w-2 sm:w-3 rounded-sm ${i < (data.filled_buys_today || 0) ? 'bg-rose-500' : 'bg-zinc-800'}`}
+                                        className={`h-1.5 w-1.5 sm:w-2 rounded-sm ${i < (data.filled_buys_today || 0) ? 'bg-rose-500' : 'bg-zinc-800'}`}
                                      ></div>
                                  ))}
                              </div>
-                             <div className="text-[10px] text-zinc-500 font-mono">
-                                 已用 {data.filled_buys_today}/5 笔
+                             <div className="text-[9px] text-zinc-500 font-mono">
+                                 {data.filled_buys_today}/5 笔
                              </div>
                          </div>
                     </div>

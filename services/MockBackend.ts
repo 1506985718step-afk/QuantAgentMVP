@@ -1,42 +1,64 @@
 
 import { 
-    AccountSummary, Position, TradeIntent, SystemEvent, MarketSnapshot, 
-    AuditReport, TradeMetrics, BrokerOrder, SimulationStatus 
+    SimulationStatus 
 } from '../types';
 import { backend as apiBackend } from './APIBackend';
+import { authService } from './authService';
+import { config } from './config';
 
-// MOCK BACKEND NOW PROXIES TO REAL BACKEND (SIMULATION MODE)
-// This ensures Logic Single Source of Truth in Python.
+// Constraint Violation Fixed:
+// Frontend should NOT contain simulation logic (tickers, equity calc).
+// MockBackend now strictly calls Backend APIs to drive the simulation.
 
 class MockBackendService {
     private isPlaying = false;
     private simulationTimer: any = null;
     private listeners: Function[] = [];
     
-    // Proxy state from API Backend
+    // Initial Index for Alpha Calculation (Visual only)
+    private initialIndexPrice = 3000;
+    private initialEquity = 100000;
+
     getState() {
-        // We wrap the API state with Simulation Status metadata
         const baseState = apiBackend.getState();
         
-        // Mock Simulation Status (In a real app, backend should provide this progress)
+        // Visual Metadata for Frontend
         const simStatus: SimulationStatus = {
             isPlaying: this.isPlaying,
             speed: 1,
             currentDate: baseState.market.replay_date || 'Init',
-            progress: 50, // Placeholder
+            progress: 50, 
             totalDays: 100
         };
 
+        const currentEquity = baseState.account.total_equity;
+        const currentIndex = baseState.market.index_price;
+        const safeInitialIndex = this.initialIndexPrice || 3000;
+        
+        const myReturn = ((currentEquity - this.initialEquity) / this.initialEquity) * 100;
+        const indexReturn = ((currentIndex - safeInitialIndex) / safeInitialIndex) * 100;
+        const alpha = myReturn - indexReturn;
+
         return {
             ...baseState,
-            simulation: simStatus
+            simulation: simStatus,
+            performance: {
+                myReturn,
+                indexReturn,
+                alpha
+            }
         };
     }
 
     subscribe(callback: Function) {
         this.listeners.push(callback);
-        // Subscribe to API Backend updates and forward them
+        // Relay API updates
         const unsub = apiBackend.subscribe(() => {
+            const s = apiBackend.getState();
+            // Capture initial state once loaded
+            if (this.initialIndexPrice === 3000 && s.market.index_price > 0 && s.market.index_price !== 3000) {
+                 this.initialIndexPrice = s.market.index_price;
+            }
             this.notify();
         });
         return () => {
@@ -49,7 +71,7 @@ class MockBackendService {
         this.listeners.forEach(cb => cb(this.getState()));
     }
 
-    // --- Simulation Controls (Drive the Backend) ---
+    // --- Simulation Controls (Remote Control) ---
 
     togglePlayback() {
         this.isPlaying = !this.isPlaying;
@@ -62,8 +84,7 @@ class MockBackendService {
     }
 
     setSpeed(speed: number) {
-        // Just UI update for now
-        this.notify();
+        this.notify(); // Just UI update
     }
 
     stepForward() {
@@ -72,51 +93,62 @@ class MockBackendService {
         this.triggerBackendTick();
     }
 
+    async jumpToDate(date: string) {
+        this.isPlaying = false;
+        if (this.simulationTimer) clearTimeout(this.simulationTimer);
+        
+        // Constraint: Backend is Truth. Reset Backend State via API.
+        const token = authService.getToken();
+        if(!token) return;
+
+        try {
+            await fetch(`${config.apiBaseUrl}/simulation/reset`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    initial_equity: 100000,
+                    trade_day: date
+                })
+            });
+            // Reset local visual trackers
+            this.initialEquity = 100000;
+            this.initialIndexPrice = 3000;
+            
+        } catch(e) {
+            console.error("Failed to reset backend simulation", e);
+        }
+        
+        this.notify();
+    }
+
     private scheduleNextTick() {
         this.simulationTimer = setTimeout(() => {
             this.triggerBackendTick().then(() => {
                 if (this.isPlaying) this.scheduleNextTick();
             });
-        }, 1500); // 1.5s per day
+        }, 1500); 
     }
 
     private async triggerBackendTick() {
-        // 1. Advance Day
+        // Drive the Python loop
         await apiBackend.nextDay();
-        // 2. Scan Market (Tick)
-        await fetch('/api/debug/tick', { method: 'POST' });
-        // State update happens via polling in APIBackend
+        await fetch(`${config.apiBaseUrl}/debug/tick`, { 
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${authService.getToken()}` } 
+        });
     }
 
-    // --- Passthrough Actions ---
-    
-    approveSignal(id: string, price: number) {
-        apiBackend.approveSignal(id, price);
-    }
-
-    rejectSignal(id: string) {
-        apiBackend.rejectSignal(id);
-    }
-
-    cancelOrder(id: string) {
-        apiBackend.cancelOrder(id);
-    }
-
-    setTotalEquity(amount: number) {
-        apiBackend.setTotalEquity(amount);
-    }
-
-    addToWatchlist(symbol: string, name: string) {
-        apiBackend.addToWatchlist(symbol, name);
-    }
-
-    removeFromWatchlist(symbol: string) {
-        apiBackend.removeFromWatchlist(symbol);
-    }
-
-    setWatchlist(items: {symbol: string, name: string}[]) {
-        apiBackend.setWatchlist(items);
-    }
+    // --- Passthroughs ---
+    approveSignal(id: string, price: number) { apiBackend.approveSignal(id, price); }
+    rejectSignal(id: string) { apiBackend.rejectSignal(id); }
+    cancelOrder(id: string) { apiBackend.cancelOrder(id); }
+    setTotalEquity(amount: number) { apiBackend.setTotalEquity(amount); }
+    addToWatchlist(s: string, n: string) { apiBackend.addToWatchlist(s, n); }
+    removeFromWatchlist(s: string) { apiBackend.removeFromWatchlist(s); }
+    setWatchlist(items: any[]) { apiBackend.setWatchlist(items); }
 }
 
 export const backend = new MockBackendService();

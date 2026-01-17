@@ -57,19 +57,20 @@ const KLineChart: React.FC<KLineChartProps> = ({ symbol, data, height = 450, hig
         volumeSeriesRef.current = volumeSeries;
         maSeriesRef.current = maSeries;
 
-        const handleResize = () => {
-            if (chartContainerRef.current && chart) {
-                chart.applyOptions({ width: chartContainerRef.current.clientWidth });
-            }
-        };
-
-        window.addEventListener('resize', handleResize);
+        // Efficient Resizing via Observer
+        const resizeObserver = new ResizeObserver(entries => {
+            if (entries.length === 0 || !entries[0].contentRect) return;
+            const newRect = entries[0].contentRect;
+            chart.applyOptions({ width: newRect.width, height: newRect.height });
+        });
+        
+        resizeObserver.observe(chartContainerRef.current);
 
         return () => {
-            window.removeEventListener('resize', handleResize);
+            resizeObserver.disconnect();
             chart.remove();
         };
-    }, [height]); // Only recreate if height significantly changes (or on mount)
+    }, []); // Run once on mount
 
     // 2. Update Data Independently
     useEffect(() => {
@@ -108,12 +109,15 @@ const KLineChart: React.FC<KLineChartProps> = ({ symbol, data, height = 450, hig
                      });
                  }
              }
-        } else {
-             // Only fit content if no specific highlight requested
-             // chartRef.current.timeScale().fitContent();
         }
-
     }, [data, highlightDate]);
+
+    // Handle Height Prop Change explicitly if needed (though resize observer handles container size)
+    useEffect(() => {
+        if (chartRef.current && height) {
+             chartRef.current.applyOptions({ height });
+        }
+    }, [height]);
 
     if (data.length === 0) {
         return (
@@ -133,7 +137,7 @@ const KLineChart: React.FC<KLineChartProps> = ({ symbol, data, height = 450, hig
                      <div className="w-2 h-0.5 bg-amber-500"></div> MA20
                  </span>
              </div>
-            <div ref={chartContainerRef} />
+            <div ref={chartContainerRef} className="w-full h-full" />
         </div>
     );
 };

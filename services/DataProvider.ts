@@ -1,5 +1,5 @@
 
-import { BarData, getMockBars } from './historicalData';
+import { BarData } from './historicalData';
 import { MarketSnapshot } from '../types';
 import { config } from './config';
 
@@ -11,23 +11,21 @@ export interface IDataProvider {
 export class HybridDataProvider implements IDataProvider {
     
     async getBars(symbol: string, limit: number = 300): Promise<BarData[]> {
-        // If explicitly in Simulation/Mock mode, use the Vintage Data immediately.
-        // This ensures the "Training Board" always has high-quality data to replay.
-        if (!config.useRealBackend) {
-            // Now generates symbol-specific mock data
-            const allBars = getMockBars(symbol);
-            return allBars; // In mock, we usually return full history so replay works from start
-        }
-
-        // Only try to fetch from backend if in Real Backend mode
+        // CONSTRAINT: Backend is Source of Truth.
+        // Even in 'mock' mode, we request the backend to generate the deterministic mock data.
+        
         const apiBase = config.apiBaseUrl || 'http://localhost:8000/api';
 
         try {
             const controller = new AbortController();
-            const id = setTimeout(() => controller.abort(), 3000);
+            const id = setTimeout(() => controller.abort(), 5000); // 5s timeout
 
             const res = await fetch(`${apiBase}/market/history/${symbol}`, {
-                signal: controller.signal
+                signal: controller.signal,
+                headers: {
+                    // Pass auth token if available, though getBars might be public
+                    'Authorization': `Bearer ${localStorage.getItem('quant_token') || ''}`
+                }
             });
             clearTimeout(id);
 
@@ -38,23 +36,24 @@ export class HybridDataProvider implements IDataProvider {
                 }
             }
         } catch (e) {
-            console.warn(`Real Backend unreachable. Switching to Training Data.`);
+            console.error(`Data Fetch Error:`, e);
         }
 
-        // Fallback for failed real request
-        return getMockBars(symbol);
+        return [];
     }
 
     async getSnapshot(symbol: string): Promise<MarketSnapshot> {
+        // Snapshot is usually part of the global system state polling, 
+        // but if needed individually, it should also come from API.
         return {
             index_price: 3300,
             change_pct: 0,
             sentiment_score: 50,
             volatility_index: 20,
-            up_count: 2000,
-            down_count: 2000,
-            limit_up_count: 30,
-            limit_down_count: 5
+            up_count: 0,
+            down_count: 0,
+            limit_up_count: 0,
+            limit_down_count: 0
         };
     }
 }

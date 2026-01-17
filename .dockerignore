@@ -1,0 +1,12 @@
+
+node_modules
+dist
+.git
+.gitignore
+.env
+data/
+data_backup/
+backend/__pycache__
+backend/*/__pycache__
+*.pyc
+.DS_Store

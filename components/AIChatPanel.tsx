@@ -3,21 +3,30 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Send, Bot, User, BrainCircuit, Loader2, Eraser } from 'lucide-react';
 import { config } from '../services/config';
 
-interface ChatMessage {
+export interface ChatMessage {
     role: 'user' | 'assistant';
     content: string;
 }
 
-const AIChatPanel: React.FC = () => {
-    const [messages, setMessages] = useState<ChatMessage[]>([
-        { 
-            role: 'assistant', 
-            content: '你好，我是 **DeepSeek Quant**。随时准备为您分析趋势或讨论策略逻辑。' 
-        }
-    ]);
+interface AIChatPanelProps {
+    messages: ChatMessage[];
+    onMessagesChange: (msgs: ChatMessage[]) => void;
+}
+
+const AIChatPanel: React.FC<AIChatPanelProps> = ({ messages, onMessagesChange }) => {
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const scrollRef = useRef<HTMLDivElement>(null);
+
+    // Initial Welcome if empty
+    useEffect(() => {
+        if (messages.length === 0) {
+            onMessagesChange([{ 
+                role: 'assistant', 
+                content: '你好，我是 **DeepSeek Quant**。随时准备为您分析趋势或讨论策略逻辑。' 
+            }]);
+        }
+    }, []);
 
     useEffect(() => {
         if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -26,7 +35,8 @@ const AIChatPanel: React.FC = () => {
     const handleSend = async () => {
         if (!input.trim() || isLoading) return;
         const userMsg: ChatMessage = { role: 'user', content: input };
-        setMessages(prev => [...prev, userMsg]);
+        const newHistory = [...messages, userMsg];
+        onMessagesChange(newHistory);
         setInput('');
         setIsLoading(true);
 
@@ -35,21 +45,21 @@ const AIChatPanel: React.FC = () => {
                 const response = await fetch(`${config.apiBaseUrl}/chat`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ history: [...messages, userMsg].slice(-10) })
+                    body: JSON.stringify({ history: newHistory.slice(-10) })
                 });
 
                 if (response.ok) {
                     const data = await response.json();
-                    setMessages(prev => [...prev, { role: 'assistant', content: data.content }]);
+                    onMessagesChange([...newHistory, { role: 'assistant', content: data.content }]);
                 } else {
-                    setMessages(prev => [...prev, { role: 'assistant', content: '连接错误。' }]);
+                    onMessagesChange([...newHistory, { role: 'assistant', content: '连接错误。' }]);
                 }
             } else {
                 await new Promise(r => setTimeout(r, 1000));
-                setMessages(prev => [...prev, { role: 'assistant', content: '模拟模式：AI 聊天需连接真实后端。' }]);
+                onMessagesChange([...newHistory, { role: 'assistant', content: '模拟模式：AI 聊天需连接真实后端。' }]);
             }
         } catch (e) {
-            setMessages(prev => [...prev, { role: 'assistant', content: '网络错误。' }]);
+            onMessagesChange([...newHistory, { role: 'assistant', content: '网络错误。' }]);
         } finally {
             setIsLoading(false);
         }
@@ -62,7 +72,11 @@ const AIChatPanel: React.FC = () => {
                     <BrainCircuit className="h-4 w-4 text-indigo-400" />
                     <h3 className="text-sm font-bold text-zinc-200">DeepSeek 投资顾问</h3>
                 </div>
-                <button onClick={() => setMessages([messages[0]])} className="p-2 text-zinc-500 hover:text-white transition-colors" title="清除对话">
+                <button 
+                    onClick={() => onMessagesChange([messages[0]])} 
+                    className="p-2 text-zinc-500 hover:text-white transition-colors" 
+                    title="清除对话"
+                >
                     <Eraser className="h-4 w-4" />
                 </button>
             </div>

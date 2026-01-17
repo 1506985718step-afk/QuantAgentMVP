@@ -11,15 +11,17 @@ import BehaviorAnalytics from './components/BehaviorAnalytics';
 import PositionHealth from './components/PositionHealth';
 import KLineChart from './components/KLineChart';
 import OrderList from './components/OrderList';
-import AIChatPanel from './components/AIChatPanel';
+import AIChatPanel, { ChatMessage } from './components/AIChatPanel';
 import BacktestControls from './components/BacktestControls'; 
 import NewsSentiment from './components/NewsSentiment';
+import AuthPage from './components/AuthPage'; 
 
 import { backend as mockBackend } from './services/MockBackend'; 
 import { backend as apiBackend } from './services/APIBackend';
+import { authService } from './services/authService';
 import { config, setBackendMode } from './services/config';
 import { dataProvider } from './services/DataProvider';
-import { Loader2, Activity, PieChart, BarChart2, LayoutDashboard, MessageSquareText, TrendingUp, Power, ScanLine, Plus, X, ChevronDown } from 'lucide-react';
+import { Loader2, Activity, PieChart, BarChart2, LayoutDashboard, MessageSquareText, TrendingUp, Power, ScanLine, Plus, X, ChevronDown, Pause, SkipForward } from 'lucide-react';
 import { BarData } from './services/historicalData';
 
 // Preset Sectors for Quick Import
@@ -49,6 +51,7 @@ const SECTORS = {
 const DEFAULT_WATCHLIST = SECTORS["大金融"];
 
 const App: React.FC = () => {
+    const [isAuthenticated, setIsAuthenticated] = useState<boolean>(authService.isAuthenticated());
     const [useRealBackend, setUseRealBackend] = useState(config.useRealBackend);
     const activeBackend = useRealBackend ? apiBackend : mockBackend;
     const [state, setState] = useState(activeBackend.getState());
@@ -57,7 +60,7 @@ const App: React.FC = () => {
     const [chartSymbol, setChartSymbol] = useState('000001'); 
     const [chartData, setChartData] = useState<BarData[]>([]);
     
-    // Auto-Scan State
+    // Auto-Scan State (Live)
     const [isAutoScanning, setIsAutoScanning] = useState(false);
     const autoScanTimer = useRef<any>(null);
 
@@ -66,6 +69,20 @@ const App: React.FC = () => {
     const [newStockCode, setNewStockCode] = useState('');
     const [newStockName, setNewStockName] = useState('');
     const [showSectorMenu, setShowSectorMenu] = useState(false);
+
+    // Lifted Chat State (Persistence)
+    const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+
+    // Initial Auth Check
+    useEffect(() => {
+        setIsAuthenticated(authService.isAuthenticated());
+    }, []);
+
+    const handleLoginSuccess = () => {
+        setIsAuthenticated(true);
+        // Force reload state
+        activeBackend.setWatchlist(DEFAULT_WATCHLIST); 
+    };
 
     const toggleBackend = () => {
         const newValue = !useRealBackend;
@@ -78,6 +95,7 @@ const App: React.FC = () => {
     };
 
     useEffect(() => {
+        if (!isAuthenticated) return;
         const unsubscribe = activeBackend.subscribe((newState: any) => {
             setState(newState);
         });
@@ -87,14 +105,16 @@ const App: React.FC = () => {
         };
         init();
         return () => unsubscribe();
-    }, [chartSymbol, useRealBackend]);
+    }, [chartSymbol, useRealBackend, isAuthenticated]);
 
     useEffect(() => {
+        if (!isAuthenticated) return;
         fetchChartData(chartSymbol);
-    }, [chartSymbol]);
+    }, [chartSymbol, isAuthenticated]);
 
-    // Auto-Scan Effect
+    // Auto-Scan Effect (Live Mode)
     useEffect(() => {
+        if (!isAuthenticated) return;
         if (isAutoScanning && useRealBackend) {
             autoScanTimer.current = setInterval(async () => {
                 await handleForceTick();
@@ -105,7 +125,7 @@ const App: React.FC = () => {
         return () => {
             if (autoScanTimer.current) clearInterval(autoScanTimer.current);
         };
-    }, [isAutoScanning, useRealBackend]);
+    }, [isAutoScanning, useRealBackend, isAuthenticated]);
 
     const fetchChartData = async (sym: string) => {
         const data = await dataProvider.getBars(sym, 1000);
@@ -163,6 +183,11 @@ const App: React.FC = () => {
     const handleSimSpeed = (s: number) => !useRealBackend && (mockBackend as any).setSpeed(s);
     const handleSimStep = () => !useRealBackend && (mockBackend as any).stepForward();
 
+    // --- Render Auth Page if not logged in ---
+    if (!isAuthenticated) {
+        return <AuthPage onLoginSuccess={handleLoginSuccess} />;
+    }
+
     if (isLoading) {
         return (
             <div className="flex h-screen items-center justify-center bg-[#09090b] text-emerald-500">
@@ -183,6 +208,10 @@ const App: React.FC = () => {
     
     // Use dynamic watchlist from backend if available, else default
     const currentWatchlist = (watchlist && watchlist.length > 0) ? watchlist : DEFAULT_WATCHLIST;
+
+    // Unified Auto Scan/Play State
+    const isSimPlaying = (!useRealBackend && simulation?.isPlaying) || false;
+    const isAutoActive = useRealBackend ? isAutoScanning : isSimPlaying;
 
     return (
         <div className="min-h-screen pb-32 relative font-sans antialiased text-zinc-200">
@@ -227,9 +256,9 @@ const App: React.FC = () => {
                     </div>
                 )}
                 
-                {/* Dashboard Grid - Row 1 */}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-6">
-                    <div className="lg:col-span-8 grid grid-cols-1 sm:grid-cols-3 gap-6">
+                {/* Dashboard Grid - Row 1 (Optimized Compact Layout) */}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-4">
+                    <div className="lg:col-span-8 grid grid-cols-1 sm:grid-cols-3 gap-4">
                          <AccountSummary 
                             data={account || {}} 
                             onUpdateEquity={handleUpdateEquity}
@@ -407,32 +436,42 @@ const App: React.FC = () => {
                                         </h2>
                                         
                                         <div className="flex items-center gap-3">
-                                            {/* Auto Scan Toggle (Live Only) */}
-                                            {useRealBackend && (
-                                                <button
-                                                    onClick={() => setIsAutoScanning(!isAutoScanning)}
-                                                    className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-bold transition-all border ${
-                                                        isAutoScanning 
-                                                        ? 'bg-indigo-500/20 text-indigo-400 border-indigo-500/50 shadow-[0_0_10px_rgba(99,102,241,0.3)]' 
-                                                        : 'bg-zinc-800 text-zinc-500 border-zinc-700 hover:text-zinc-300'
-                                                    }`}
-                                                    title={isAutoScanning ? "自动巡航中 (每10秒)" : "点击开启自动巡航"}
-                                                >
-                                                    <Power className={`h-3.5 w-3.5 ${isAutoScanning ? 'text-indigo-400' : ''}`} />
-                                                    {isAutoScanning ? 'AUTO: ON' : 'AUTO: OFF'}
-                                                </button>
-                                            )}
+                                            {/* Auto Scan/Play Toggle */}
+                                            <button
+                                                onClick={() => {
+                                                    if (useRealBackend) setIsAutoScanning(!isAutoScanning);
+                                                    else isSimPlaying ? handleSimPause() : handleSimPlay();
+                                                }}
+                                                className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-bold transition-all border ${
+                                                    isAutoActive 
+                                                    ? 'bg-indigo-500/20 text-indigo-400 border-indigo-500/50 shadow-[0_0_10px_rgba(99,102,241,0.3)]' 
+                                                    : 'bg-zinc-800 text-zinc-500 border-zinc-700 hover:text-zinc-300'
+                                                }`}
+                                                title={useRealBackend ? (isAutoActive ? "自动巡航中 (每10秒)" : "点击开启自动巡航") : (isAutoActive ? "回放进行中" : "点击开始回放")}
+                                            >
+                                                {isAutoActive 
+                                                 ? <Pause className="h-3.5 w-3.5 text-indigo-400" /> 
+                                                 : <Power className="h-3.5 w-3.5" />}
+                                                {isAutoActive 
+                                                    ? (useRealBackend ? 'AUTO: ON' : 'PLAYING') 
+                                                    : (useRealBackend ? 'AUTO: OFF' : 'PAUSED')}
+                                            </button>
 
                                             <div className="h-4 w-px bg-white/10"></div>
 
-                                            {/* Manual Scan Button */}
+                                            {/* Manual Scan/Step Button */}
                                             <button
-                                                onClick={handleForceTick}
+                                                onClick={() => {
+                                                    if (useRealBackend) handleForceTick();
+                                                    else handleSimStep();
+                                                }}
                                                 className="flex items-center gap-2 px-4 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-bold rounded shadow-lg border border-white/10 transition-all active:scale-95 hover:border-white/20"
-                                                title="立即触发全市场扫描"
+                                                title={useRealBackend ? "立即触发全市场扫描" : "单步执行并扫描"}
                                             >
-                                                <ScanLine className="h-3.5 w-3.5 text-emerald-400" />
-                                                立即扫描
+                                                {useRealBackend 
+                                                 ? <ScanLine className="h-3.5 w-3.5 text-emerald-400" />
+                                                 : <SkipForward className="h-3.5 w-3.5 text-emerald-400" />}
+                                                {useRealBackend ? '立即扫描' : '单步扫描'}
                                             </button>
 
                                             {pendingIntents.length > 0 && (
@@ -445,12 +484,16 @@ const App: React.FC = () => {
                                     
                                     {pendingIntents.length === 0 ? (
                                         <div className="glass-panel rounded-lg p-8 flex flex-col items-center justify-center text-zinc-600 border-dashed border-zinc-800">
-                                            <Activity className={`h-8 w-8 mb-3 opacity-20 ${isAutoScanning ? 'animate-pulse text-indigo-500 opacity-50' : ''}`} />
+                                            <Activity className={`h-8 w-8 mb-3 opacity-20 ${isAutoActive ? 'animate-pulse text-indigo-500 opacity-50' : ''}`} />
                                             <p className="text-sm font-medium">
-                                                {isAutoScanning ? "系统正在自动巡航中..." : "等待扫描指令..."}
+                                                {isAutoActive 
+                                                    ? (useRealBackend ? "系统正在自动巡航中..." : "历史回放进行中...") 
+                                                    : "等待扫描指令..."}
                                             </p>
                                             <p className="text-xs text-zinc-700 mt-1">
-                                                {isAutoScanning ? "AI 正在实时监控盘口异动" : "点击上方“立即扫描”开始寻找机会"}
+                                                {isAutoActive 
+                                                    ? (useRealBackend ? "AI 正在实时监控盘口异动" : "策略正在逐日扫描历史数据") 
+                                                    : (useRealBackend ? "点击上方“立即扫描”开始寻找机会" : "点击“播放”或“单步扫描”生成信号")}
                                             </p>
                                         </div>
                                     ) : (
@@ -469,7 +512,10 @@ const App: React.FC = () => {
 
                                 <section>
                                     <h2 className="text-lg font-medium text-white mb-4 pl-2">当前持仓</h2>
-                                    <PositionTable positions={positions || []} />
+                                    <PositionTable 
+                                        positions={positions || []} 
+                                        config={audit?.active_config}
+                                    />
                                 </section>
                             </div>
 
@@ -491,7 +537,10 @@ const App: React.FC = () => {
 
                 {activeTab === 'advisor' && (
                     <div className="max-w-4xl mx-auto animate-in fade-in">
-                        <AIChatPanel />
+                        <AIChatPanel 
+                            messages={chatMessages}
+                            onMessagesChange={setChatMessages}
+                        />
                     </div>
                 )}
 

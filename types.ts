@@ -10,7 +10,8 @@ export enum IntentType {
     SELL = 'SELL',
     STOP_LOSS_SELL = 'STOP_LOSS_SELL',
     TAKE_PROFIT_SELL = 'TAKE_PROFIT_SELL',
-    REDUCE_ONLY = 'REDUCE_ONLY'
+    REDUCE_ONLY = 'REDUCE_ONLY',
+    TIME_STOP_SELL = 'TIME_STOP_SELL' // Added to match Backend
 }
 
 export enum AgentType {

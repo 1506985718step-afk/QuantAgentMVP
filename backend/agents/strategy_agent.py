@@ -4,6 +4,7 @@ import asyncio
 import random
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
+from ..app.settings import settings
 from ..core.contracts import TradeIntent, Side, IntentType, IntentSource, IntentVersion, OrderStatus, StrategyConfig, TradeMetrics
 from ..services.llm_service import LLMService
 from ..services.news_service import news_service
@@ -12,16 +13,8 @@ from ..services.memory_service import memory_service
 class StrategyAgent:
     def __init__(self):
         self.llm = LLMService()
-        # Single Source of Truth for Watchlist
-        # Initial defaults
-        self.watchlist = [
-            {'symbol': '000001', 'name': '平安银行'},
-            {'symbol': '600519', 'name': '贵州茅台'},
-            {'symbol': '002594', 'name': '比亚迪'},
-            {'symbol': '300750', 'name': '宁德时代'},
-            {'symbol': '300059', 'name': '东方财富'},
-            {'symbol': '601138', 'name': '工业富联'} 
-        ]
+        # Initialize from Config Profile
+        self.watchlist = list(settings.DEFAULT_WATCHLIST)
         self.cooldowns: Dict[str, datetime] = {}
         self.last_scan_time = None
 
@@ -44,33 +37,37 @@ class StrategyAgent:
     def adapt_config(self, current_config: StrategyConfig, metrics: TradeMetrics) -> StrategyConfig:
         """
         Dynamically adjust strategy parameters based on recent performance.
+        Now uses Profiles from settings for boundaries.
         """
         new_config = current_config.model_copy()
         now_str = datetime.now().isoformat()
         
-        # 1. DEFENSIVE MODE: High Drawdown (> 5%) or Low Win Rate (< 40%)
+        # 1. DEFENSIVE MODE
         if metrics.max_drawdown > 0.05 or (metrics.total_trades > 5 and metrics.win_rate < 0.4):
-            new_config.vol_threshold = 2.0  
-            new_config.stop_loss_pct = 2.0  
-            new_config.take_profit_pct = 5.0 
+            profile = settings.STRATEGY_PROFILES["conservative"]
+            new_config.vol_threshold = profile["vol_threshold"]
+            new_config.stop_loss_pct = profile["stop_loss_pct"]
+            new_config.take_profit_pct = profile["take_profit_pct"]
             new_config.update_reason = f"Defensive Mode: Drawdown {metrics.max_drawdown*100:.1f}%"
             new_config.last_updated = now_str
             return new_config
 
-        # 2. AGGRESSIVE MODE: High Win Rate (> 60%) and Low Drawdown
+        # 2. AGGRESSIVE MODE
         if metrics.total_trades > 5 and metrics.win_rate > 0.6 and metrics.max_drawdown < 0.03:
-            new_config.vol_threshold = 1.2  
-            new_config.stop_loss_pct = 3.5  
-            new_config.take_profit_pct = 12.0 
+            profile = settings.STRATEGY_PROFILES["aggressive"]
+            new_config.vol_threshold = profile["vol_threshold"]
+            new_config.stop_loss_pct = profile["stop_loss_pct"]
+            new_config.take_profit_pct = profile["take_profit_pct"]
             new_config.update_reason = f"Aggressive Mode: Win Rate {metrics.win_rate*100:.0f}%"
             new_config.last_updated = now_str
             return new_config
 
         # 3. NEUTRAL MODE
-        if current_config.vol_threshold != 1.5:
-            new_config.vol_threshold = 1.5
-            new_config.stop_loss_pct = 3.0
-            new_config.take_profit_pct = 8.0
+        default = settings.STRATEGY_PROFILES["default"]
+        if current_config.vol_threshold != default["vol_threshold"]:
+            new_config.vol_threshold = default["vol_threshold"]
+            new_config.stop_loss_pct = default["stop_loss_pct"]
+            new_config.take_profit_pct = default["take_profit_pct"]
             new_config.update_reason = "Neutral Mode: Baseline"
             new_config.last_updated = now_str
         
@@ -87,7 +84,6 @@ class StrategyAgent:
         # 0. Get Real-Time News Context
         latest_news = news_service.get_latest_news()
 
-        # Prepare candidates for parallel processing
         candidates = []
         analysis_tasks = []
 
@@ -99,14 +95,11 @@ class StrategyAgent:
             if not data:
                 continue
 
-            # Check cooldown (avoid spamming signals for same stock in 30 mins)
             if symbol in self.cooldowns:
                 if now - self.cooldowns[symbol] < timedelta(minutes=30):
                     continue
 
-            # Mock Vol Ratio calculation (Real app needs history)
-            # In live mode, we rely on what 'sina_data' gives or calculate roughly
-            # Randomized to simulate varying market conditions (Range 1.2 - 2.2)
+            # Deterministic/Mock Vol Ratio
             vol_ratio = 1.2 + (random.random() * 1.0) if data.get('volume', 0) > 0 else 0.0
             
             # 1. Pre-filter using Dynamic Config
@@ -114,7 +107,7 @@ class StrategyAgent:
                  continue
 
             if data['change_pct'] < -3.0:
-                continue # Don't buy dropping knives
+                continue 
             
             candidates.append({
                 "symbol": symbol,
@@ -125,10 +118,8 @@ class StrategyAgent:
 
         # 2. Parallel LLM Analysis
         for c in candidates:
-            # Retrieve Memory (RAG)
             past_lessons = memory_service.get_context(c["symbol"])
 
-            # Create coroutine
             task = self.llm.analyze(
                 symbol=c["symbol"],
                 name=c["name"],
@@ -144,7 +135,6 @@ class StrategyAgent:
         if not analysis_tasks:
             return []
 
-        # Wait for all analyses to complete concurrently
         results = await asyncio.gather(*analysis_tasks)
 
         # 3. Process Results
@@ -152,11 +142,9 @@ class StrategyAgent:
             c = candidates[i]
             
             if analysis.get('signal'):
-                # Calculate Qty
                 price = c["data"]['price']
                 if price <= 0.01: continue
                 
-                # Logic: Buy approx 50,000 CNY value
                 raw_lots = int(50000 / (price * 100))
                 qty = raw_lots * 100
                 if qty == 0: qty = 100
@@ -171,7 +159,6 @@ class StrategyAgent:
                     intent_type=IntentType.BUY,
                     qty=qty,
                     price=price,
-                    # Use Dynamic Config for Risk Parameters
                     stop_loss=round(price * (1 - config.stop_loss_pct/100), 2),
                     take_profit=round(price * (1 + config.take_profit_pct/100), 2),
                     strategy_id="DeepSeek-V3-Quant",

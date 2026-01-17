@@ -1,18 +1,17 @@
 
 import React from 'react';
-import { Position } from '../types';
+import { Position, StrategyConfig } from '../types';
 import { ArrowUpRight, ArrowDownRight, Lock, Clock, AlertTriangle, Target } from 'lucide-react';
-import { config } from '../services/config';
 
 interface PositionTableProps {
     positions: Position[];
+    config?: StrategyConfig;
 }
 
-const PositionTable: React.FC<PositionTableProps> = ({ positions }) => {
-    // Hardcoded config fallback if not available in context, ideally should come from props or global store
-    // Matching backend defaults: SL -3%, TP +8% (Dynamic config might change this)
-    const TARGET_TP = 8.0;
-    const TARGET_SL = -3.0;
+const PositionTable: React.FC<PositionTableProps> = ({ positions, config }) => {
+    // Dynamic config fallback
+    const TARGET_TP = config ? config.take_profit_pct : 8.0;
+    const TARGET_SL = config ? -config.stop_loss_pct : -3.0;
 
     if (positions.length === 0) {
         return (
@@ -76,14 +75,14 @@ const PositionTable: React.FC<PositionTableProps> = ({ positions }) => {
                                     {/* Risk Bars */}
                                     <div className="flex flex-col gap-1.5 w-full max-w-[120px] mx-auto">
                                         {/* TP Bar */}
-                                        <div className="flex items-center gap-1.5">
+                                        <div className="flex items-center gap-1.5" title={`目标止盈: +${TARGET_TP}%`}>
                                             <Target className="h-2.5 w-2.5 text-emerald-500/70" />
                                             <div className="flex-1 h-1 bg-zinc-800 rounded-full overflow-hidden">
                                                 <div className="h-full bg-emerald-500 transition-all duration-500" style={{width: `${tpProgress}%`}}></div>
                                             </div>
                                         </div>
                                         {/* SL Bar */}
-                                        <div className="flex items-center gap-1.5">
+                                        <div className="flex items-center gap-1.5" title={`动态止损: ${TARGET_SL}%`}>
                                             <AlertTriangle className="h-2.5 w-2.5 text-rose-500/70" />
                                             <div className="flex-1 h-1 bg-zinc-800 rounded-full overflow-hidden">
                                                 <div className="h-full bg-rose-500 transition-all duration-500" style={{width: `${slProgress}%`}}></div>

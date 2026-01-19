@@ -5,5 +5,5 @@ pydantic==2.6.0
 pydantic-settings==2.1.0
 python-multipart==0.0.9
 google-genai==0.2.1
-akshare==1.13.12
+akshare
 pandas==2.2.0

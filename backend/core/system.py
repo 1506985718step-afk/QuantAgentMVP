@@ -20,6 +20,7 @@ from ..services.sina_data import sina_provider
 from ..agents.strategy_agent import StrategyAgent
 from ..services.llm_service import LLMService
 from ..services.memory_service import memory_service
+# Corrected Import
 from ..services.market_data import market_data_service
 
 DATA_FILE = "data/state.json"

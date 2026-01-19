@@ -231,7 +231,7 @@ const App: React.FC = () => {
                 />
             )}
             
-            <main className="container mx-auto mt-6 max-w-[1800px] px-4 sm:px-6 space-y-6">
+            <main className="container mx-auto mt-4 sm:mt-6 max-w-[1800px] px-3 sm:px-6 space-y-4 sm:space-y-6">
                 
                 {/* Status Banners */}
                 {!useRealBackend && (
@@ -257,8 +257,8 @@ const App: React.FC = () => {
                 )}
                 
                 {/* Dashboard Grid - Row 1 (Optimized Compact Layout) */}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-4">
-                    <div className="lg:col-span-8 grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-3 sm:gap-4">
+                    <div className="lg:col-span-8 grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
                          <AccountSummary 
                             data={account || {}} 
                             onUpdateEquity={handleUpdateEquity}
@@ -274,8 +274,8 @@ const App: React.FC = () => {
                 </div>
 
                 {/* Navigation Tabs */}
-                <div className="flex justify-between items-center border-b border-white/5 pb-1">
-                    <div className="flex gap-6">
+                <div className="flex justify-between items-center border-b border-white/5 pb-1 overflow-x-auto no-scrollbar">
+                    <div className="flex gap-4 sm:gap-6">
                         {[
                             { id: 'live', label: '交易看板', icon: LayoutDashboard },
                             { id: 'analysis', label: '分析报表', icon: PieChart },
@@ -284,7 +284,7 @@ const App: React.FC = () => {
                             <button
                                 key={tab.id}
                                 onClick={() => setActiveTab(tab.id as any)}
-                                className={`flex items-center gap-2 pb-3 text-sm font-medium transition-all relative ${
+                                className={`flex items-center gap-2 pb-3 text-sm font-medium transition-all relative whitespace-nowrap ${
                                     activeTab === tab.id 
                                     ? 'text-white' 
                                     : 'text-zinc-500 hover:text-zinc-300'
@@ -301,9 +301,9 @@ const App: React.FC = () => {
                 </div>
 
                 {activeTab === 'live' && (
-                    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                    <div className="space-y-4 sm:space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
                         {/* Market Context */}
-                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-6">
                             <div className="lg:col-span-2">
                                 <MarketStatus data={market || {}} />
                             </div>
@@ -317,8 +317,8 @@ const App: React.FC = () => {
                         </div>
 
                         {/* Chart & Execution */}
-                        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-[500px]">
-                            <div className="lg:col-span-8 flex flex-col gap-4 h-full">
+                        <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 sm:gap-6 h-auto lg:h-[500px]">
+                            <div className="lg:col-span-8 flex flex-col gap-3 sm:gap-4 h-full min-h-[400px]">
                                 <div className="flex items-center justify-between">
                                     <div className="flex items-center gap-2 text-zinc-400">
                                         <BarChart2 className="h-4 w-4" />
@@ -409,7 +409,7 @@ const App: React.FC = () => {
                                         </div>
                                     </div>
                                 </div>
-                                <div className="flex-1 glass-card rounded-lg overflow-hidden relative shadow-lg"> 
+                                <div className="flex-1 glass-card rounded-lg overflow-hidden relative shadow-lg h-[400px] lg:h-auto"> 
                                     <KLineChart 
                                         symbol={chartSymbol} 
                                         data={visibleChartData} 
@@ -419,8 +419,8 @@ const App: React.FC = () => {
                                 </div>
                             </div>
                             
-                            <div className="lg:col-span-4 flex flex-col h-full">
-                                <div className="h-8 mb-4"></div> 
+                            <div className="lg:col-span-4 flex flex-col h-full min-h-[300px]">
+                                <div className="hidden lg:block h-8 mb-4"></div> 
                                 <OrderList orders={orders || []} onCancel={handleCancelOrder} />
                             </div>
                         </div>

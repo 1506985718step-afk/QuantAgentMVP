@@ -10,13 +10,13 @@ from .settings import settings
 from ..core.system import trading_system
 from ..core.contracts import TradeIntent
 from ..core.security import create_access_token, decode_access_token
+# Corrected Import
 from ..services.market_data import market_data_service
 from ..services.user_service import user_service, UserInDB, BrokerAccount
 
 app = FastAPI(title=settings.APP_NAME, version=settings.VERSION)
 
 # SECURITY FIX: restrict origins in production based on ENV
-# Allow comma-separated list from env, or default to localhost
 allow_origins_str = os.getenv("CORS_ORIGINS", "http://localhost,http://localhost:3000,http://127.0.0.1,http://127.0.0.1:3000")
 origins = [origin.strip() for origin in allow_origins_str.split(",")]
 

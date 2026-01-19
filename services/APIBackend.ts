@@ -4,8 +4,7 @@ import {
     AuditReport, TradeMetrics, BrokerOrder
 } from '../types';
 import { authService } from './authService';
-
-const API_BASE = 'http://localhost:8000';
+import { config } from './config';
 
 class APIBackendService {
     private listeners: Function[] = [];
@@ -13,7 +12,7 @@ class APIBackendService {
 
     // Initial Safe State
     private state = {
-        isConnected: false, // New: Track connection status
+        isConnected: false, // Track connection status
         market: {
             index_price: 0,
             change_pct: 0,
@@ -23,10 +22,10 @@ class APIBackendService {
             down_count: 0,
             limit_up_count: 0,
             limit_down_count: 0,
-            replay_date: '2026-01-17' // Default to requested date
+            replay_date: '2026-01-17' 
         } as MarketSnapshot,
         account: {
-            total_equity: 100000, // Default Start
+            total_equity: 100000, 
             available_cash: 100000,
             market_value: 0,
             day_pnl: 0,
@@ -37,7 +36,7 @@ class APIBackendService {
         intents: [] as TradeIntent[],
         events: [] as SystemEvent[],
         audit: {
-            date: '2026-01-17', // Default to requested date
+            date: '2026-01-17', 
             score: 100,
             status: 'PASS',
             checks: [],
@@ -57,7 +56,7 @@ class APIBackendService {
     };
 
     constructor() {
-        console.log("API Backend Initialized. Connecting to " + API_BASE);
+        console.log("API Backend Initialized. Connecting to relative path: " + config.apiBaseUrl);
         this.startPolling();
     }
 
@@ -72,18 +71,30 @@ class APIBackendService {
         return token ? { 'Authorization': `Bearer ${token}` } : {};
     }
 
+    // Helper to construct URLs
+    // config.apiBaseUrl is '/api'
+    // endpoint should be 'state' -> result '/api/state'
+    private getUrl(endpoint: string) {
+        // Remove leading slash from endpoint to avoid //
+        const path = endpoint.startsWith('/') ? endpoint.slice(1) : endpoint;
+        return `${config.apiBaseUrl}/${path}`;
+    }
+
     private async fetchState() {
         if (!authService.isAuthenticated()) return; // Stop polling if not logged in
 
         try {
-            const res = await fetch(`${API_BASE}/api/state`, {
+            // URL: /api/state
+            const res = await fetch(this.getUrl('state'), {
                 headers: this.getHeaders()
             });
+            
             if (res.status === 401) {
                 authService.logout();
                 return;
             }
-            if (!res.ok) throw new Error("API Error");
+            if (!res.ok) throw new Error(`API Error: ${res.status}`);
+            
             const data = await res.json();
             
             // Merge with local state structure
@@ -94,8 +105,9 @@ class APIBackendService {
             };
             this.notify();
         } catch (e) {
-            // console.warn("Backend disconnected (Is Python server running?):", e);
+            // Silent failure for polling to avoid console spam, but update status
             if (this.state.isConnected) {
+                console.warn("Lost connection to backend.");
                 this.state = { ...this.state, isConnected: false };
                 this.notify();
             }
@@ -123,10 +135,10 @@ class APIBackendService {
         const intent = this.state.intents.find(i => i.intent_id === id);
         if (!intent) return;
         
-        const payload = { ...intent, price }; // Update price if modified
+        const payload = { ...intent, price }; 
 
         try {
-            await fetch(`${API_BASE}/api/intent/approve`, {
+            await fetch(this.getUrl('intent/approve'), {
                 method: 'POST',
                 headers: { 
                     'Content-Type': 'application/json',
@@ -143,7 +155,7 @@ class APIBackendService {
     rejectSignal(id: string) {
         // Optimistic UI update could be done here
         console.log("Reject logic sent to backend");
-        fetch(`${API_BASE}/api/intent/reject?intent_id=${id}`, { 
+        fetch(this.getUrl(`intent/reject?intent_id=${id}`), { 
             method: 'POST',
             headers: this.getHeaders() 
         }).catch(console.error);
@@ -151,7 +163,7 @@ class APIBackendService {
 
     async nextDay() {
         try {
-            await fetch(`${API_BASE}/api/debug/next_day`, { 
+            await fetch(this.getUrl('debug/next_day'), { 
                 method: 'POST',
                 headers: this.getHeaders()
             });
@@ -161,7 +173,7 @@ class APIBackendService {
     
     async cancelOrder(id: string) {
         try {
-            await fetch(`${API_BASE}/api/orders/cancel?intent_id=${id}`, { 
+            await fetch(this.getUrl(`orders/cancel?intent_id=${id}`), { 
                 method: 'POST',
                 headers: this.getHeaders()
             });
@@ -174,12 +186,11 @@ class APIBackendService {
     async setTotalEquity(amount: number) {
         // Optimistic Update for Mock Mode / Fast UI
         this.state.account.total_equity = amount;
-        // Reset buying power assumption roughly
         this.state.account.available_cash = amount - this.state.account.market_value;
         this.notify();
 
         try {
-            await fetch(`${API_BASE}/api/account/equity`, { 
+            await fetch(this.getUrl('account/equity'), { 
                 method: 'POST',
                 headers: { 
                     'Content-Type': 'application/json',
@@ -202,7 +213,7 @@ class APIBackendService {
         }
 
         try {
-            await fetch(`${API_BASE}/api/watchlist/add`, { 
+            await fetch(this.getUrl('watchlist/add'), { 
                 method: 'POST', 
                 headers: { 
                     'Content-Type': 'application/json',
@@ -219,7 +230,7 @@ class APIBackendService {
         this.state.watchlist = this.state.watchlist.filter(w => w.symbol !== symbol);
         this.notify();
         try {
-            await fetch(`${API_BASE}/api/watchlist/remove`, { 
+            await fetch(this.getUrl('watchlist/remove'), { 
                 method: 'POST', 
                 headers: { 
                     'Content-Type': 'application/json',
@@ -236,7 +247,7 @@ class APIBackendService {
         this.state.watchlist = items;
         this.notify();
         try {
-            await fetch(`${API_BASE}/api/watchlist/set`, {
+            await fetch(this.getUrl('watchlist/set'), {
                 method: 'POST',
                 headers: { 
                     'Content-Type': 'application/json',

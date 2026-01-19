@@ -134,11 +134,17 @@ class MockBackendService {
 
     private async triggerBackendTick() {
         // Drive the Python loop
-        await apiBackend.nextDay();
-        await fetch(`${config.apiBaseUrl}/debug/tick`, { 
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${authService.getToken()}` } 
-        });
+        try {
+            await apiBackend.nextDay();
+            await fetch(`${config.apiBaseUrl}/debug/tick`, { 
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${authService.getToken()}` } 
+            });
+        } catch (e) {
+            console.warn("Simulation tick failed (Backend offline?)");
+            this.isPlaying = false; // Stop playback if backend dies
+            this.notify();
+        }
     }
 
     // --- Passthroughs ---

@@ -9,19 +9,35 @@ services:
       dockerfile: backend/Dockerfile
     container_name: quant_backend
     volumes:
-      # Data Persistence: Host Directory Mounting for easier backup
-      # Now you can simply backup the './data_backup' folder on your server
       - ./data_backup:/app/data
     environment:
       - MODE=${MODE:-live}
       - TZ=Asia/Shanghai
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
       - SECRET_KEY=${SECRET_KEY}
-      # Admin Credentials (defined in .env)
+      - DATABASE_URL=postgresql+asyncpg://${DB_USER:-quant}:${DB_PASSWORD:-password}@db:5432/${DB_NAME:-quant_db}
       - ADMIN_USER=${ADMIN_USER:-admin}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
-      # Security: Allow specific CORS origins (comma separated)
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost}
+    depends_on:
+      - db
+    restart: unless-stopped
+    networks:
+      - quant_net
+
+  # TruthStore (PostgreSQL)
+  db:
+    image: postgres:15-alpine
+    container_name: quant_db
+    environment:
+      - POSTGRES_USER=${DB_USER:-quant}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-password}
+      - POSTGRES_DB=${DB_NAME:-quant_db}
+    volumes:
+      - ./pg_data:/var/lib/postgresql/data
+      - ./backend/sql:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
     restart: unless-stopped
     networks:
       - quant_net

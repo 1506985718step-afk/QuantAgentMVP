@@ -9,7 +9,12 @@ class Settings(BaseSettings):
     APP_NAME: str = "QuantAgent MVP"
     VERSION: str = "0.9.1-strict"
     
+    # Traceability (Constitution §7)
+    # This must be bumped whenever logic/prompt/params change
+    POLICY_VERSION: str = "v0.1.0-alpha"
+    
     # Execution Mode: 'mock' | 'replay' | 'live'
+    # 'paper' is treated as a safe variant of 'live' connected to simulated broker
     MODE: str = "mock"  
     
     # Session Context
@@ -19,13 +24,13 @@ class Settings(BaseSettings):
     
     # Infrastructure
     REDIS_URL: Optional[str] = None
+    DATABASE_URL: str = "postgresql+asyncpg://quant:password@localhost:5432/quant_db"
     
     # LLM Configuration
     DEEPSEEK_API_KEY: str = "sk-bddf5370bddf40ef844bc9637b1cdbe3"
     DEEPSEEK_API_URL: str = "https://api.deepseek.com/chat/completions"
     
     # Security & Auth
-    # SECURITY FIX: Read from env, fallback to generated only for dev
     SECRET_KEY: str = os.getenv("SECRET_KEY", "dev_secret_key_DO_NOT_USE_IN_PROD")
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 

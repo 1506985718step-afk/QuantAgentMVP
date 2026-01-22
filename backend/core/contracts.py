@@ -5,7 +5,8 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 import uuid
 
-# --- Enums ---
+# ... (Previous Enums remain unchanged, omitted for brevity, keeping only essential ones for context if needed, but assuming full file replacement usually) ...
+# Re-including required Enums/Classes for the full file replacement to work correctly.
 
 class Side(str, Enum):
     BUY = "BUY"
@@ -51,19 +52,17 @@ class OrderStatus(str, Enum):
     REJECTED = "REJECTED"
     DEFERRED = "DEFERRED"
 
-# --- Sub-models ---
-
 class IntentSource(BaseModel):
-    source_event_id: str # Link to Trigger Event (e.g. MarketSnapshot ID)
+    source_event_id: str
     parent_intent_id: Optional[str] = None
-    trigger: str = "signal" # signal, human, exit_policy
+    trigger: str = "signal"
 
 class IntentVersion(BaseModel):
     intent_schema: str = "1.1.0"
     rule_version: str = "1.0.0"
 
 class EventMeta(BaseModel):
-    mode: str = "mock" # mock | replay | live
+    mode: str = "mock"
     seed: Optional[int] = None
     tags: List[str] = []
     version: Dict[str, str] = {
@@ -90,8 +89,6 @@ class AuditCheck(BaseModel):
     rule_name: str
     status: str
     details: str
-
-# --- Primary Models ---
 
 class StrategyConfig(BaseModel):
     vol_threshold: float
@@ -143,31 +140,25 @@ class AuditReport(BaseModel):
 
 class TradeIntent(BaseModel):
     intent_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    
-    # Traceability & Idempotency
     correlation_id: str = Field(default_factory=lambda: f"corr-{uuid.uuid4().hex[:8]}")
     idempotency_key: Optional[str] = None
     llm_request_hash: Optional[str] = None
-    
     trade_day: str
     session_id: str
     symbol: str
     name: str = "Unknown"
     side: Side
     intent_type: IntentType
-    
     qty: int
     price: float
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
     time_in_force: str = "DAY"
     reduce_only: bool = False
-    
     strategy_id: str
     reason: str
     source: IntentSource
     version: IntentVersion
-    
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
     status: OrderStatus = OrderStatus.PENDING
     filled_qty: int = 0
@@ -184,8 +175,8 @@ class Position(BaseModel):
     unrealized_pnl_pct: float
     today_buys: int
     days_held: int = 0
-    strategy_id: str = "Manual" # Tracks which strategy initiated this
-    max_pnl_pct: float = 0.0 # High Water Mark
+    strategy_id: str = "Manual"
+    max_pnl_pct: float = 0.0
     stop_loss_price: Optional[float] = None
 
 class SystemEvent(BaseModel):
@@ -193,24 +184,18 @@ class SystemEvent(BaseModel):
     ts: str = Field(default_factory=lambda: datetime.now().isoformat())
     trade_day: str
     session_id: str
-    
-    # Traceability
     trace_id: str = Field(default_factory=lambda: f"trace-{uuid.uuid4()}")
-    correlation_id: Optional[str] = None # Link to Intent or Parent Event
+    correlation_id: Optional[str] = None
     idempotency_key: Optional[str] = None
-    
     type: str
     agent: AgentType
     decision: Decision
     severity: Severity = Severity.INFO
-    
     symbol: Optional[str] = None
     reason_code: str = "OP_LOG"
     reason_text: str
-    
     payload: Dict[str, Any] = {}
     snapshots: Optional[EventSnapshots] = None
-    
     meta: EventMeta = EventMeta()
 
 class GuardReceipt(BaseModel):
@@ -218,3 +203,29 @@ class GuardReceipt(BaseModel):
     reason_code: str
     reason_text: str
     snapshots: EventSnapshots
+
+# --- TruthStore Contracts (Constitution v0.1) ---
+
+class Observation(BaseModel):
+    """
+    Standardized Input Snapshot for a Step.
+    """
+    market: MarketSnapshot
+    account: AccountSummary
+    positions: List[Position]
+    intents_pending: List[TradeIntent]
+
+class StepRecord(BaseModel):
+    """
+    Standardized Step Record for DB.
+    """
+    step_id: str
+    episode_id: str
+    step_index: int
+    timestamp: datetime # Event Time
+    ingested_at: datetime # Write Time
+    observation: Observation
+    action: Optional[List[TradeIntent]]
+    guardrails: List[Dict[str, Any]] = [] # Now a List
+    violations: List[Dict[str, Any]] = [] # New
+    reward: float

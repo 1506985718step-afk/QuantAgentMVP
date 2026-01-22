@@ -38,7 +38,7 @@ export const MOCK_EVENTS: SystemEvent[] = [
         trade_day: '2026-01-17',
         session_id: 'sess-init',
         trace_id: 'trace-init',
-        parent_event_id: null,
+        correlation_id: null,
         type: EventType.MARKET_SNAPSHOT,
         agent: AgentType.SYSTEM,
         decision: Decision.INFO,

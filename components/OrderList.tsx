@@ -2,7 +2,7 @@
 import React from 'react';
 import { BrokerOrder } from '../types';
 import { OrderStatus } from '../types';
-import { RefreshCcw, XCircle } from 'lucide-react';
+import { RefreshCcw, XCircle, Clock } from 'lucide-react';
 
 interface OrderListProps {
     orders: BrokerOrder[];
@@ -20,6 +20,7 @@ const OrderList: React.FC<OrderListProps> = ({ orders, onCancel }) => {
             case OrderStatus.FILLED: return '已成交';
             case OrderStatus.CANCELLED: return '已撤单';
             case OrderStatus.REJECTED: return '已拒绝';
+            case OrderStatus.DEFERRED: return 'T+1 延期'; // New Label
             default: return status;
         }
     };
@@ -30,6 +31,7 @@ const OrderList: React.FC<OrderListProps> = ({ orders, onCancel }) => {
             case OrderStatus.PARTIALLY_FILLED: return 'text-indigo-400 bg-indigo-400/10 border-indigo-400/20';
             case OrderStatus.FILLED: return 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20';
             case OrderStatus.CANCELLED: return 'text-slate-400 bg-slate-400/10 border-slate-400/20';
+            case OrderStatus.DEFERRED: return 'text-purple-400 bg-purple-400/10 border-purple-400/20'; // New Style
             default: return 'text-slate-500';
         }
     };
@@ -59,6 +61,7 @@ const OrderList: React.FC<OrderListProps> = ({ orders, onCancel }) => {
             <div className="flex-1 overflow-y-auto custom-scrollbar divide-y divide-slate-800 bg-[#070708]">
                 {sortedOrders.map((order) => {
                     const isActive = order.status === OrderStatus.SUBMITTED || order.status === OrderStatus.PARTIALLY_FILLED;
+                    const isDeferred = order.status === OrderStatus.DEFERRED;
                     
                     return (
                         <div key={order.orderId} className="px-4 py-3 hover:bg-slate-800/30 transition-colors flex items-center justify-between group gap-3">
@@ -101,6 +104,8 @@ const OrderList: React.FC<OrderListProps> = ({ orders, onCancel }) => {
                                         >
                                             <XCircle className="h-4.5 w-4.5" />
                                         </button>
+                                    ) : isDeferred ? (
+                                        <Clock className="h-4.5 w-4.5 text-purple-500 opacity-50" title="T+1 锁定" />
                                     ) : (
                                         <span className="w-4"></span>
                                     )}

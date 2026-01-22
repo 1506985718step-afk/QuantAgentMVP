@@ -37,7 +37,6 @@ class MarketDataService:
 
     def _get_history_bars_sync(self, symbol: str, days: int) -> List[Dict[str, Any]]:
         try:
-            # AkShare data fetching logic
             start_date = "20240101"
             end_date = datetime.now().strftime("%Y%m%d")
             

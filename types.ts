@@ -46,7 +46,8 @@ export enum OrderStatus {
     PARTIALLY_FILLED = 'PARTIALLY_FILLED',
     FILLED = 'FILLED',
     CANCELLED = 'CANCELLED',
-    REJECTED = 'REJECTED'
+    REJECTED = 'REJECTED',
+    DEFERRED = 'DEFERRED'
 }
 
 // MVP Event Set v1
@@ -64,12 +65,13 @@ export enum EventType {
     EXIT_SIGNAL_EMITTED = 'EXIT_SIGNAL_EMITTED',
     DAILY_REPORT = 'DAILY_REPORT',
     STRATEGY_UPDATED = 'STRATEGY_UPDATED',
-    NEWS_UPDATE = 'NEWS_UPDATE' // New: News event
+    NEWS_UPDATE = 'NEWS_UPDATE', // New: News event
+    SYSTEM_STATUS = 'SYSTEM_STATUS' // New: System status event
 }
 
 // Sub-structures for TradeIntent
 export interface IntentSource {
-    source_event_id: string;
+    source_event_id: string; // The specific MarketSnapshot or Event that triggered this
     parent_intent_id: string | null;
     trigger: 'signal' | 'human' | 'exit_policy';
 }
@@ -82,6 +84,9 @@ export interface IntentVersion {
 // Data structures
 export interface TradeIntent {
     intent_id: string;
+    correlation_id: string; // UUID tracking the lifecycle (Signal -> Order -> Fill)
+    idempotency_key?: string; // Unique key to prevent double-submission (e.g. from UI clicks)
+    
     trade_day: string;
     session_id: string;
     symbol: string;
@@ -100,13 +105,15 @@ export interface TradeIntent {
     // Metadata
     strategy_id: string;
     reason: string;
+    llm_request_hash?: string; // SHA256 of the prompt/response that generated this
+    
     source: IntentSource;
     version: IntentVersion;
 
     // Frontend State 
     timestamp: string;
-    status: OrderStatus | 'PENDING_APPROVAL'; // Updated to use OrderStatus
-    filled_qty?: number; // New: Track partial fills
+    status: OrderStatus | 'PENDING_APPROVAL'; 
+    filled_qty?: number; 
 }
 
 export interface Position {
@@ -121,6 +128,8 @@ export interface Position {
     unrealized_pnl_pct: number;
     today_buys: number; 
     days_held: number; // New: Tracks T+N status. 0 = Bought Today.
+    strategy_id?: string; // New: Tracks which strategy initiated this position
+    max_pnl_pct?: number; // New: High Water Mark
 }
 
 export interface AccountSummary {
@@ -152,8 +161,8 @@ export interface SystemEvent {
     session_id: string;
 
     // Tracing (MANDATORY)
-    trace_id: string;
-    parent_event_id: string | null;
+    trace_id: string; // Global trace (e.g. Request ID)
+    correlation_id: string | null; // Pointer to parent Intent/Event ID
     idempotency_key?: string;
 
     type: EventType | string;
@@ -262,4 +271,12 @@ export interface SimulationStatus {
     currentDate: string;
     progress: number; // 0-100
     totalDays: number;
+}
+
+export interface ExperimentResult {
+    scenario: string;
+    pnl_pct: number;
+    drawdown: number;
+    trades: number;
+    status: 'PASS' | 'FAIL';
 }

@@ -49,16 +49,17 @@ class OrderStatus(str, Enum):
     FILLED = "FILLED"
     CANCELLED = "CANCELLED"
     REJECTED = "REJECTED"
+    DEFERRED = "DEFERRED"
 
 # --- Sub-models ---
 
 class IntentSource(BaseModel):
-    source_event_id: str
+    source_event_id: str # Link to Trigger Event (e.g. MarketSnapshot ID)
     parent_intent_id: Optional[str] = None
     trigger: str = "signal" # signal, human, exit_policy
 
 class IntentVersion(BaseModel):
-    intent_schema: str = "1.0.0"
+    intent_schema: str = "1.1.0"
     rule_version: str = "1.0.0"
 
 class EventMeta(BaseModel):
@@ -142,6 +143,12 @@ class AuditReport(BaseModel):
 
 class TradeIntent(BaseModel):
     intent_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    
+    # Traceability & Idempotency
+    correlation_id: str = Field(default_factory=lambda: f"corr-{uuid.uuid4().hex[:8]}")
+    idempotency_key: Optional[str] = None
+    llm_request_hash: Optional[str] = None
+    
     trade_day: str
     session_id: str
     symbol: str
@@ -177,6 +184,8 @@ class Position(BaseModel):
     unrealized_pnl_pct: float
     today_buys: int
     days_held: int = 0
+    strategy_id: str = "Manual" # Tracks which strategy initiated this
+    max_pnl_pct: float = 0.0 # High Water Mark
     stop_loss_price: Optional[float] = None
 
 class SystemEvent(BaseModel):
@@ -185,8 +194,9 @@ class SystemEvent(BaseModel):
     trade_day: str
     session_id: str
     
+    # Traceability
     trace_id: str = Field(default_factory=lambda: f"trace-{uuid.uuid4()}")
-    parent_event_id: Optional[str] = None
+    correlation_id: Optional[str] = None # Link to Intent or Parent Event
     idempotency_key: Optional[str] = None
     
     type: str

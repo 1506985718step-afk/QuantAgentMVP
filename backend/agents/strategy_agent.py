@@ -2,6 +2,7 @@
 import uuid
 import asyncio
 import random
+import hashlib
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
 from ..app.settings import settings
@@ -9,6 +10,7 @@ from ..core.contracts import TradeIntent, Side, IntentType, IntentSource, Intent
 from ..services.llm_service import LLMService
 from ..services.news_service import news_service
 from ..services.memory_service import memory_service
+from ..infra.scratchpad_store import scratchpad
 
 class StrategyAgent:
     def __init__(self):
@@ -119,6 +121,16 @@ class StrategyAgent:
         # 2. Parallel LLM Analysis
         for c in candidates:
             past_lessons = memory_service.get_context(c["symbol"])
+            
+            # Trace: Log Input to Scratchpad
+            # Using asyncio.create_task to not block strategy loop
+            asyncio.create_task(scratchpad.log("LLM_INPUT", {
+                "symbol": c["symbol"],
+                "price": c["data"]['price'],
+                "vol_ratio": c["vol_ratio"],
+                "news_count": len(latest_news),
+                "lessons_count": len(past_lessons)
+            }))
 
             task = self.llm.analyze(
                 symbol=c["symbol"],
@@ -141,6 +153,12 @@ class StrategyAgent:
         for i, analysis in enumerate(results):
             c = candidates[i]
             
+            # Trace: Log Output to Scratchpad
+            asyncio.create_task(scratchpad.log("LLM_OUTPUT", {
+                "symbol": c["symbol"],
+                "result": analysis
+            }))
+            
             if analysis.get('signal'):
                 price = c["data"]['price']
                 if price <= 0.01: continue
@@ -149,8 +167,16 @@ class StrategyAgent:
                 qty = raw_lots * 100
                 if qty == 0: qty = 100
 
+                # Traceability: Generate Hash for LLM decision
+                # Combine input factors + analysis output to create a "receipt"
+                trace_str = f"{c['symbol']}_{price}_{c['vol_ratio']}_{analysis.get('reasoning')}"
+                llm_hash = hashlib.sha256(trace_str.encode('utf-8')).hexdigest()[:16]
+
                 intent = TradeIntent(
                     intent_id=f"strat-{uuid.uuid4().hex[:8]}",
+                    correlation_id=f"trace-{uuid.uuid4().hex[:8]}", # Start of a new trace chain
+                    llm_request_hash=llm_hash,
+                    
                     trade_day=now.strftime("%Y-%m-%d"),
                     session_id="python-backend",
                     symbol=c["symbol"],

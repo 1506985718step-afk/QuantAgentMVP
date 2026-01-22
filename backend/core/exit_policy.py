@@ -5,61 +5,79 @@ from .contracts import Position, TradeIntent, Side, IntentType, IntentSource, In
 
 class ExitPolicy:
     """
-    Exit Strategy
-    - Take Profit / Stop Loss (Real-time or EOD)
-    - Time Stop: Evaluated at T+1 Close, Executed at T+2 Open (via next day scan).
+    ExitPolicy-B (Trend Following Decision Tree).
+    Rules:
+    1. Hard Stop Loss: price <= stop_loss
+    2. Time Stop (Smart): Held > N days AND return < Threshold (and sellable).
+    3. Trailing Stop: If (Max_PnL - Current_PnL) > Drawdown_Limit -> SELL.
     """
     
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {
-            "take_profit_pct": 0.05,
-            "tp1_sell_ratio": 0.5,
-            "stop_loss_pct": 0.02,
+            "rule_version": "Exit-B-1.2",
+            
+            # 1. Hard Stop
+            "stop_loss_pct": 3.0,
+            
+            # 2. Time Stop
             "time_stop_days": 1, 
-            "time_stop_threshold": 0.01,
-            "rule_version": "exit_B_1.0"
+            "time_stop_threshold": 1.0, # If < 1% after 1 day, consider exit
+            
+            # 3. Trailing Stop (Trend Following)
+            "trailing_stop_activation_pct": 5.0, # Only activate after +5% profit
+            "trailing_drawdown_pct": 2.5,        # Sell if it drops 2.5% from peak
+            
+            "tp1_sell_ratio": 1.0,
         }
 
     def check_exit(self, position: Position, session_id: str, trade_day: str) -> Optional[TradeIntent]:
         """
-        Constraint #6: ExitPolicy Only generates Intent. Does not execute.
+        Evaluates position against the decision tree.
         """
-        # Convert thresholds to percentage
-        tp_threshold = self.config["take_profit_pct"] * 100
-        sl_threshold = self.config["stop_loss_pct"] * 100
-        time_stop_threshold = self.config["time_stop_threshold"] * 100
+        # Unpack Config
+        sl_threshold = self.config["stop_loss_pct"]
+        time_limit = self.config["time_stop_days"]
+        time_min_return = self.config["time_stop_threshold"]
+        trailing_activation = self.config["trailing_stop_activation_pct"]
+        trailing_drawdown = self.config["trailing_drawdown_pct"]
         
-        # 1. Hard Stop Loss
-        if position.unrealized_pnl_pct <= -sl_threshold:
+        current_pnl = position.unrealized_pnl_pct
+        max_pnl = position.max_pnl_pct
+        
+        # --- Rule 1: Hard Stop Loss ---
+        if current_pnl <= -sl_threshold:
              return self._create_intent(
                  position, 
                  IntentType.STOP_LOSS_SELL, 
                  1.0, 
-                 f"Hit Stop Loss (-{sl_threshold}%): Current {position.unrealized_pnl_pct:.2f}%",
+                 f"Hard Stop: PnL {current_pnl:.2f}% <= -{sl_threshold}%",
                  session_id, trade_day
              )
 
-        # 2. Hard Take Profit
-        if position.unrealized_pnl_pct >= tp_threshold:
-             ratio = self.config.get("tp1_sell_ratio", 1.0)
-             return self._create_intent(
-                 position, 
-                 IntentType.TAKE_PROFIT_SELL, 
-                 ratio,
-                 f"Hit Take Profit (+{tp_threshold}%), Selling {ratio*100}%",
-                 session_id, trade_day
-             )
-        
-        # 3. Time Stop (Strict Definition: T+1 Close Eval -> T+2 Action)
-        # Only if we held it for > 1 day and returns are flat.
-        if position.days_held > self.config["time_stop_days"] and position.unrealized_pnl_pct < time_stop_threshold:
+        # --- Rule 2: Time Stop (T+1 Impatience) ---
+        # Note: 'days_held' increments overnight. 
+        # So days_held=1 means we bought yesterday.
+        if position.days_held >= time_limit and current_pnl < time_min_return:
              return self._create_intent(
                  position,
-                 IntentType.TIME_STOP_SELL, # Correct Intent Type
+                 IntentType.TIME_STOP_SELL,
                  1.0,
-                 f"Time Stop: Held {position.days_held} days, PnL {position.unrealized_pnl_pct:.2f}% < {time_stop_threshold}%",
+                 f"Time Stop: Held {position.days_held}d, PnL {current_pnl:.2f}% < {time_min_return}%",
                  session_id, trade_day
              )
+
+        # --- Rule 3: Trailing Stop (Trend Reversal) ---
+        # Only if we reached activation threshold (e.g. +5%)
+        if max_pnl >= trailing_activation:
+            drawdown = max_pnl - current_pnl
+            if drawdown >= trailing_drawdown:
+                return self._create_intent(
+                    position,
+                    IntentType.TAKE_PROFIT_SELL,
+                    1.0,
+                    f"Trailing Stop: Peak {max_pnl:.2f}%, Drawdown {drawdown:.2f}% >= {trailing_drawdown}%",
+                    session_id, trade_day
+                )
 
         return None
 
@@ -78,10 +96,10 @@ class ExitPolicy:
             qty=qty_to_sell,
             price=pos.current_price, 
             reduce_only=True,
-            strategy_id="exit_policy_v1",
+            strategy_id="exit_policy_B",
             reason=reason,
             source=IntentSource(
-                source_event_id=f"auto_gen_{uuid.uuid4().hex[:8]}", 
+                source_event_id=f"exit_{uuid.uuid4().hex[:8]}", 
                 trigger="exit_policy"
             ),
             version=IntentVersion(rule_version=self.config["rule_version"])

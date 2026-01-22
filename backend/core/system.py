@@ -16,11 +16,17 @@ from .trade_guard import TradeGuard
 from .execution_engine import ExecutionEngine
 from .exit_policy import ExitPolicy
 from .events import *
+from .experiment_runner import ExperimentRunner
+
 from ..services.sina_data import sina_provider
 from ..agents.strategy_agent import StrategyAgent
+from ..agents.validation_agent import validation_agent
+from ..agents.refinement_agent import refinement_agent
+from ..infra.scratchpad_store import scratchpad
+
 from ..services.llm_service import LLMService
 from ..services.memory_service import memory_service
-# Corrected Import
+# Consolidated Market Data Import
 from ..services.market_data import market_data_service
 
 DATA_FILE = "data/state.json"
@@ -30,7 +36,8 @@ class TradingSystem:
     def __init__(self):
         # 0. System Safety
         self.lock = asyncio.Lock() # P1: Concurrency Safety
-        self.processed_ids: Set[str] = set() # P0: Idempotency
+        self.processed_ids: Set[str] = set() # P0: Idempotency (Intent IDs)
+        self.processed_idempotency_keys: Set[str] = set() # P0: Idempotency (Client Keys)
 
         # 1. Initialize Default State
         self._init_state()
@@ -41,6 +48,10 @@ class TradingSystem:
         self.exit_policy = ExitPolicy()
         self.strategy_agent = StrategyAgent()
         self.llm_service = LLMService() 
+        
+        # New Components
+        self.experiment_runner = ExperimentRunner(self)
+        self.experiment_results: List[Dict] = []
         
         self._load_from_disk_sync() # Initial load is synchronous
     
@@ -56,6 +67,7 @@ class TradingSystem:
         self.positions: List[Position] = []
         self.intents: List[TradeIntent] = []
         self.events: List[SystemEvent] = []
+        self.experiment_results = []
         
         self.market_snapshot = MarketSnapshot(
             index_price=3000.0, change_pct=0.0, sentiment_score=60, 
@@ -89,7 +101,8 @@ class TradingSystem:
         self._init_state()
         self.account.total_equity = initial_equity
         self.account.available_cash = initial_equity
-        self.processed_ids.clear() # Reset idempotency cache
+        self.processed_ids.clear() 
+        self.processed_idempotency_keys.clear()
         
         if trade_day:
             settings.TRADE_DAY = trade_day
@@ -111,7 +124,8 @@ class TradingSystem:
             "audit": self.audit_report.model_dump(),
             "metrics": self.metrics.model_dump(),
             "orders": [],
-            "watchlist": self.strategy_agent.get_watchlist() 
+            "watchlist": self.strategy_agent.get_watchlist(),
+            "experiment_results": self.experiment_results
         }
 
     def _calculate_metrics(self):
@@ -131,6 +145,10 @@ class TradingSystem:
 
     async def tick(self):
         async with self.lock:
+            # 0. Log to Scratchpad (Persistent Trace)
+            tick_event_id = f"tick_{uuid.uuid4().hex[:8]}"
+            await scratchpad.log("TICK_START", {"id": tick_event_id, "time": datetime.now().isoformat(), "equity": self.account.total_equity})
+
             if settings.MODE == "live":
                 settings.TRADE_DAY = datetime.now().strftime("%Y-%m-%d")
                 self.market_snapshot.replay_date = settings.TRADE_DAY
@@ -153,18 +171,31 @@ class TradingSystem:
             for pos in self.positions:
                 exit_intent = self.exit_policy.check_exit(pos, "sess_live", settings.TRADE_DAY)
                 if exit_intent:
+                    exit_intent.source.source_event_id = tick_event_id # Link to tick
                     self._process_intent_lifecycle(exit_intent)
 
+            # Strategy Agent Run (Pass tick ID for traceability)
             new_intents = await self.strategy_agent.run_cycle(self.market_snapshot, realtime_data, self.strategy_config)
             
-            for intent in new_intents:
+            # Validation Agent: Pre-check Intents
+            valid_intents = []
+            for i in new_intents:
+                i.source.source_event_id = tick_event_id # Link intent to this specific market tick
+                is_valid, msg = validation_agent.validate_intent(i)
+                if is_valid:
+                    valid_intents.append(i)
+                else:
+                    self._log(EventType.GUARD_BLOCKED, AgentType.RISK, Decision.BLOCK, f"Validation Failed: {msg}", 
+                              symbol=i.symbol, correlation_id=i.correlation_id)
+            
+            for intent in valid_intents:
                 if any(i.symbol == intent.symbol and i.side == intent.side and i.status == OrderStatus.PENDING for i in self.intents):
                     continue
                 self._process_intent_lifecycle(intent)
 
             # Performance: Async save to prevent loop blocking
             asyncio.create_task(self._save_to_disk_async())
-            return {"status": "ticked", "signals": len(new_intents)}
+            return {"status": "ticked", "signals": len(valid_intents)}
 
     def _update_valuations(self, data_map: Dict[str, Any]):
         total_mv = 0.0
@@ -176,8 +207,13 @@ class TradingSystem:
                 pos.market_value = pos.quantity * current_price
                 cost_basis = pos.quantity * pos.average_cost
                 pos.unrealized_pnl = pos.market_value - cost_basis
+                
                 if cost_basis > 0:
                     pos.unrealized_pnl_pct = (pos.unrealized_pnl / cost_basis) * 100
+                    # TRACK HIGH WATER MARK (For Trailing Stop)
+                    if pos.unrealized_pnl_pct > pos.max_pnl_pct:
+                        pos.max_pnl_pct = pos.unrealized_pnl_pct
+                        
             total_mv += pos.market_value
 
         self.account.market_value = total_mv
@@ -195,30 +231,43 @@ class TradingSystem:
         
         if receipt.decision == Decision.BLOCK:
             self._log(EventType.GUARD_BLOCKED, AgentType.RISK, Decision.BLOCK, 
-                      f"Blocked: {receipt.reason_text}", symbol=intent.symbol)
+                      f"Blocked: {receipt.reason_text}", symbol=intent.symbol, correlation_id=intent.correlation_id)
             return
 
         intent.status = OrderStatus.PENDING
         self.intents.insert(0, intent)
         self._log(EventType.SIGNAL_EMITTED, AgentType.STRATEGY, Decision.INFO, 
-                  f"New Signal: {intent.side} {intent.symbol} ({intent.intent_type})", symbol=intent.symbol)
+                  f"New Signal: {intent.side} {intent.symbol} ({intent.intent_type})", 
+                  symbol=intent.symbol, correlation_id=intent.correlation_id)
+        
+        # Trace intent generation
+        asyncio.create_task(scratchpad.log("INTENT_GENERATED", intent.model_dump()))
 
     def submit_intent(self, intent: TradeIntent) -> bool:
-        # P0: Idempotency Check for Manual Orders
+        """
+        Executed when Human approves a signal.
+        """
+        # P0: Strict Idempotency Check (Key based)
+        if intent.idempotency_key and intent.idempotency_key in self.processed_idempotency_keys:
+            print(f"WARN: Idempotency Key Replay {intent.idempotency_key}")
+            return False
+            
         if intent.intent_id in self.processed_ids:
             print(f"WARN: Duplicate Intent ID {intent.intent_id}")
             return False
+        
+        # Lock this operation
+        if intent.idempotency_key:
+            self.processed_idempotency_keys.add(intent.idempotency_key)
+        self.processed_ids.add(intent.intent_id)
         
         # P0: Order Loop Close - Must result in Filled or Rejected
         receipt = self.guard.check(intent, self.account.filled_buys_today)
         if receipt.decision == Decision.BLOCK:
             self._log(EventType.ORDER_REJECTED, AgentType.RISK, Decision.BLOCK,
-                      f"Guard Blocked: {receipt.reason_text}", symbol=intent.symbol)
-            # Cannot set status here as it might be a new object, but caller handles false
+                      f"Guard Blocked: {receipt.reason_text}", symbol=intent.symbol, correlation_id=intent.correlation_id)
             return False
         
-        self.processed_ids.add(intent.intent_id)
-
         existing = next((i for i in self.intents if i.intent_id == intent.intent_id), None)
         if existing:
             existing.status = OrderStatus.SUBMITTED
@@ -227,7 +276,7 @@ class TradingSystem:
             self.intents.insert(0, intent)
         
         self._log(EventType.HUMAN_APPROVED, AgentType.EXECUTION, Decision.ALLOW, 
-                  f"Approved: {intent.side} {intent.symbol}", symbol=intent.symbol)
+                  f"Approved: {intent.side} {intent.symbol}", symbol=intent.symbol, correlation_id=intent.correlation_id)
         
         self._execute_trade(intent)
         asyncio.create_task(self._save_to_disk_async())
@@ -237,12 +286,20 @@ class TradingSystem:
         costs = 5.0 
         fill_price = intent.price 
         
-        valid, msg = self.engine.validate_order(intent, self.positions, self.account.available_cash)
+        # NEW: Validate Order Returns 3 Values
+        valid, code, msg = self.engine.validate_order(intent, self.positions, self.account.available_cash)
         
         if not valid:
-            self._log(EventType.ORDER_REJECTED, AgentType.EXECUTION, Decision.BLOCK, 
-                      f"Execution Failed: {msg}", symbol=intent.symbol)
-            intent.status = OrderStatus.REJECTED # Terminal State
+            if code == "T1_VIOLATION":
+                # Special Case: T+1 Violation -> Defer
+                intent.status = OrderStatus.DEFERRED
+                self._log(EventType.ENGINE_REJECTED, AgentType.EXECUTION, Decision.BLOCK, 
+                          f"Deferred to Next Day: {msg}", symbol=intent.symbol, correlation_id=intent.correlation_id)
+            else:
+                # Standard Rejection
+                intent.status = OrderStatus.REJECTED 
+                self._log(EventType.ORDER_REJECTED, AgentType.EXECUTION, Decision.BLOCK, 
+                          f"Execution Failed: {msg} ({code})", symbol=intent.symbol, correlation_id=intent.correlation_id)
             return
         
         if intent.side == Side.SELL:
@@ -250,7 +307,12 @@ class TradingSystem:
              if pos:
                  realized_pnl = (fill_price - pos.average_cost) * intent.qty - costs
                  realized_pnl_pct = (realized_pnl / (pos.average_cost * intent.qty)) * 100 if pos.average_cost > 0 else 0
-                 memory_service.record_trade(intent.symbol, "Unknown", settings.TRADE_DAY, realized_pnl_pct, intent.reason, intent.strategy_id)
+                 
+                 # ATTRIBUTION FIX: Use the Position's Entry Strategy ID, not the Exit Policy's ID
+                 # This ensures the original strategy gets the credit/blame in the Memory Store.
+                 entry_strategy_id = pos.strategy_id if pos.strategy_id else "Manual"
+                 
+                 memory_service.record_trade(intent.symbol, "Unknown", settings.TRADE_DAY, realized_pnl_pct, intent.reason, entry_strategy_id)
 
         self.positions = self.engine.apply_fill(self.positions, intent, fill_price, costs)
         
@@ -265,7 +327,7 @@ class TradingSystem:
         intent.filled_qty = intent.qty
         
         self._log(EventType.ORDER_FILLED, AgentType.BROKER, Decision.EXECUTE, 
-                  f"Filled {intent.side} {intent.qty} @ {fill_price}", symbol=intent.symbol)
+                  f"Filled {intent.side} {intent.qty} @ {fill_price}", symbol=intent.symbol, correlation_id=intent.correlation_id)
 
     async def _sync_market_data(self) -> Dict[str, Any]:
         position_symbols = [p.symbol for p in self.positions]
@@ -296,7 +358,7 @@ class TradingSystem:
         for i in self.intents:
             if i.intent_id == intent_id:
                 i.status = OrderStatus.CANCELLED
-                self._log(EventType.ORDER_REJECTED, AgentType.BROKER, Decision.INFO, "Cancelled by User")
+                self._log(EventType.ORDER_REJECTED, AgentType.BROKER, Decision.INFO, "Cancelled by User", correlation_id=i.correlation_id)
                 asyncio.create_task(self._save_to_disk_async())
                 break
 
@@ -304,6 +366,13 @@ class TradingSystem:
         self.account.total_equity = amount
         self.account.available_cash = amount - self.account.market_value
         asyncio.create_task(self._save_to_disk_async())
+
+    async def run_experiments(self):
+        """Triggered via API"""
+        self.experiment_results = await self.experiment_runner.run_daily_validation()
+        self._log(EventType.SYSTEM_STATUS, AgentType.SYSTEM, Decision.INFO, "Experiments Completed")
+        asyncio.create_task(self._save_to_disk_async())
+        return self.experiment_results
 
     async def generate_audit(self):
         try:
@@ -318,6 +387,14 @@ class TradingSystem:
                 ai_suggestions=report_data.get("ai_suggestions", []),
                 active_config=self.strategy_config
             )
+            
+            # Refinement Agent: Propose evolutions based on audit
+            new_config = refinement_agent.refine_config(self.strategy_config, self.metrics, self.audit_report)
+            if new_config != self.strategy_config:
+                self.strategy_config = new_config
+                self.audit_report.active_config = new_config # Update in report
+                self._log(EventType.STRATEGY_UPDATED, AgentType.STRATEGY, Decision.INFO, f"Refinement: {new_config.update_reason}")
+            
             self._log(EventType.DAILY_REPORT, AgentType.AUDIT, Decision.INFO, f"Audit Generated. Score: {self.audit_report.score}")
             asyncio.create_task(self._save_to_disk_async())
             return self.audit_report
@@ -325,10 +402,11 @@ class TradingSystem:
             print(f"Audit Generation Error: {e}")
             return self.audit_report
 
-    def _log(self, type: str, agent: str, decision: str, text: str, symbol: str = None):
+    def _log(self, type: str, agent: str, decision: str, text: str, symbol: str = None, correlation_id: str = None):
         evt = SystemEvent(
             trade_day=settings.TRADE_DAY,
             session_id="sess_live",
+            correlation_id=correlation_id,
             type=type, agent=agent, decision=decision, reason_text=text, symbol=symbol, severity=Severity.INFO,
             meta={"mode": settings.MODE}
         )
@@ -343,7 +421,8 @@ class TradingSystem:
                 "account": self.account.model_dump(),
                 "positions": [p.model_dump() for p in self.positions],
                 "intents": [i.model_dump() for i in self.intents],
-                "events": [e.model_dump() for e in self.events[-100:]] 
+                "events": [e.model_dump() for e in self.events[-100:]],
+                "experiment_results": self.experiment_results
             }
             await asyncio.to_thread(self._write_file, state)
         except Exception as e:
@@ -365,6 +444,7 @@ class TradingSystem:
                 if "positions" in data: self.positions = [Position(**p) for p in data["positions"]]
                 if "intents" in data: self.intents = [TradeIntent(**i) for i in data["intents"]]
                 if "events" in data: self.events = [SystemEvent(**e) for e in data["events"]]
+                if "experiment_results" in data: self.experiment_results = data["experiment_results"]
             except Exception as e:
                 print(f"Load failed: {e}")
 

@@ -220,6 +220,12 @@ async def generate_audit(current_user: UserInDB = Depends(get_current_user)):
     report = await trading_system.generate_audit()
     return report
 
+@app.post("/api/experiments/run")
+async def run_experiments(current_user: UserInDB = Depends(get_current_user)):
+    """Trigger automated scenario validation"""
+    results = await trading_system.run_experiments()
+    return results
+
 @app.post("/api/chat")
 async def chat_with_expert(req: ChatRequest, current_user: UserInDB = Depends(get_current_user)):
     msgs = [{"role": m.role, "content": m.content} for m in req.history]

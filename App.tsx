@@ -138,13 +138,19 @@ const App: React.FC = () => {
     const handleUpdateEquity = (amount: number) => activeBackend.setTotalEquity(amount);
     
     const handleManualNextDay = async () => {
-        if (useRealBackend) await fetch(`${config.apiBaseUrl}/debug/next_day`, { method: 'POST' });
+        if (useRealBackend) await fetch(`${config.apiBaseUrl}/debug/next_day`, { 
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${authService.getToken()}` }
+        });
         else (mockBackend as any).nextDay();
     };
     
     const handleForceTick = async () => {
         try {
-            await fetch(`${config.apiBaseUrl}/debug/tick`, { method: 'POST' });
+            await fetch(`${config.apiBaseUrl}/debug/tick`, { 
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${authService.getToken()}` }
+            });
         } catch (e) {
             console.error("Scan failed", e);
         }
@@ -199,7 +205,7 @@ const App: React.FC = () => {
         );
     }
 
-    const { market, account, positions, intents, events, audit, metrics, orders, isConnected, simulation, watchlist } = state as any;
+    const { market, account, positions, intents, events, audit, metrics, orders, isConnected, simulation, watchlist, experiment_results } = state as any;
     const showConnectionError = useRealBackend && isConnected === false;
     const pendingIntents = intents?.filter((i: any) => i.status === 'PENDING_APPROVAL' || i.status === 'PENDING') || [];
     const visibleChartData = (!useRealBackend && market?.replay_date && chartData.length > 0)
@@ -530,7 +536,10 @@ const App: React.FC = () => {
 
                 {activeTab === 'analysis' && (
                     <div className="grid grid-cols-1 gap-6 animate-in fade-in">
-                        <AIAuditPanel report={audit || {}} />
+                        <AIAuditPanel 
+                            report={audit || {}} 
+                            experimentResults={experiment_results || []}
+                        />
                         <BehaviorAnalytics metrics={metrics || {}} />
                     </div>
                 )}

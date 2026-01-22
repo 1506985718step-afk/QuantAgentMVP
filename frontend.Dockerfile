@@ -7,6 +7,8 @@ RUN npm ci
 COPY . .
 # Set API Base to relative path for Nginx proxying
 ENV VITE_API_BASE=/api
+# Default to Real Backend for Docker builds
+ENV VITE_USE_REAL_BACKEND=true
 RUN npm run build
 
 # Stage 2: Serve

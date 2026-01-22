@@ -1,6 +1,6 @@
 
-from typing import List, Dict, Any, Set
-from datetime import datetime
+from typing import List, Dict, Any, Set, Optional
+from datetime import datetime, date
 import uuid
 import json
 import os
@@ -10,7 +10,8 @@ from ..app.settings import settings
 
 from .contracts import (
     AccountSummary, Position, TradeIntent, SystemEvent, MarketSnapshot,
-    AgentType, Decision, Severity, EventType, Side, OrderStatus, StrategyConfig, AuditReport, TradeMetrics
+    AgentType, Decision, Severity, EventType, Side, OrderStatus, StrategyConfig, AuditReport, TradeMetrics,
+    Observation
 )
 from .trade_guard import TradeGuard
 from .execution_engine import ExecutionEngine
@@ -23,6 +24,7 @@ from ..agents.strategy_agent import StrategyAgent
 from ..agents.validation_agent import validation_agent
 from ..agents.refinement_agent import refinement_agent
 from ..infra.scratchpad_store import scratchpad
+from ..infra.truth_store import truth_store
 
 from ..services.llm_service import LLMService
 from ..services.memory_service import memory_service
@@ -40,7 +42,12 @@ class TradingSystem:
         self.processed_idempotency_keys: Set[str] = set() # P0: Idempotency (Client Keys)
 
         # 1. Initialize Default State
+        self.initial_equity = 100000.0 # Track initial equity dynamically
         self._init_state()
+        
+        # TruthStore Context
+        self.current_episode_id: Optional[uuid.UUID] = None
+        self.step_index: int = 0
         
         # 2. Components
         self.guard = TradeGuard(max_daily_buys=settings.MAX_DAILY_BUYS)
@@ -57,8 +64,8 @@ class TradingSystem:
     
     def _init_state(self):
         self.account = AccountSummary(
-            total_equity=100000.0, 
-            available_cash=100000.0,
+            total_equity=self.initial_equity, 
+            available_cash=self.initial_equity,
             market_value=0.0,
             day_pnl=0.0,
             day_pnl_pct=0.0,
@@ -97,22 +104,36 @@ class TradingSystem:
             active_config=self.strategy_config
         )
 
-    def reset_state(self, initial_equity: float = 100000.0, trade_day: str = None):
-        self._init_state()
-        self.account.total_equity = initial_equity
-        self.account.available_cash = initial_equity
-        self.processed_ids.clear() 
-        self.processed_idempotency_keys.clear()
-        
-        if trade_day:
-            settings.TRADE_DAY = trade_day
-            self.market_snapshot.replay_date = trade_day
-        
-        self._log(EventType.MARKET_SNAPSHOT, AgentType.SYSTEM, Decision.INFO, 
-                  f"System Reset. Equity: {initial_equity}, Date: {settings.TRADE_DAY}")
-        
-        # Trigger async save
-        asyncio.create_task(self._save_to_disk_async())
+    async def reset_state(self, initial_equity: float = 100000.0, trade_day: str = None):
+        """
+        Async Reset to allow DB operations.
+        """
+        async with self.lock:
+            # Close previous episode if exists
+            if self.current_episode_id:
+                await self._close_current_episode()
+
+            self.initial_equity = initial_equity
+            self._init_state()
+            self.account.total_equity = initial_equity
+            self.account.available_cash = initial_equity
+            
+            self.processed_ids.clear() 
+            self.processed_idempotency_keys.clear()
+            self.step_index = 0
+            
+            if trade_day:
+                settings.TRADE_DAY = trade_day
+                self.market_snapshot.replay_date = trade_day
+            
+            self._log(EventType.MARKET_SNAPSHOT, AgentType.SYSTEM, Decision.INFO, 
+                    f"System Reset. Equity: {initial_equity}, Date: {settings.TRADE_DAY}")
+            
+            # Start new TruthStore Episode
+            await self._start_new_episode()
+            
+            # Trigger async save
+            asyncio.create_task(self._save_to_disk_async())
 
     def get_state(self) -> Dict[str, Any]:
         return {
@@ -131,7 +152,7 @@ class TradingSystem:
     def _calculate_metrics(self):
         filled_sells = [e for e in self.events if e.type == EventType.ORDER_FILLED and "SELL" in e.reason_text]
         total_trades = len(filled_sells)
-        start_equity = 100000.0 
+        start_equity = self.initial_equity
         current_equity = self.account.total_equity
         peak_equity = max(start_equity, current_equity) 
         drawdown = (peak_equity - current_equity) / peak_equity if peak_equity > 0 else 0
@@ -143,18 +164,54 @@ class TradingSystem:
         self.metrics.win_rate = win_rate
         self.audit_report.active_config = self.strategy_config
 
+    async def _start_new_episode(self):
+        try:
+            trade_date = datetime.strptime(settings.TRADE_DAY, "%Y-%m-%d").date()
+        except:
+            trade_date = date.today()
+
+        self.current_episode_id = await truth_store.create_episode(
+            session_id=settings.SESSION_ID,
+            mode=settings.MODE,
+            trade_day=trade_date,
+            initial_equity=self.initial_equity,
+            policy_version=settings.POLICY_VERSION
+        )
+        self.step_index = 0
+        print(f"[TruthStore] Started Episode {self.current_episode_id} ({settings.MODE})")
+
+    async def _close_current_episode(self):
+        if not self.current_episode_id: return
+        
+        await truth_store.close_episode(
+            episode_id=self.current_episode_id,
+            final_equity=self.account.total_equity,
+            max_drawdown=self.metrics.max_drawdown,
+            pnl_amount=self.account.day_pnl,
+            pnl_rate=self.account.day_pnl_pct / 100.0 if self.account.day_pnl_pct else 0
+        )
+        print(f"[TruthStore] Closed Episode {self.current_episode_id}")
+        self.current_episode_id = None
+
     async def tick(self):
         async with self.lock:
+            # Ensure Episode Exists
+            if not self.current_episode_id:
+                await self._start_new_episode()
+
             # 0. Log to Scratchpad (Persistent Trace)
             tick_event_id = f"tick_{uuid.uuid4().hex[:8]}"
             await scratchpad.log("TICK_START", {"id": tick_event_id, "time": datetime.now().isoformat(), "equity": self.account.total_equity})
+            
+            # Capture Start Time (Event Time)
+            event_time = datetime.now()
 
             if settings.MODE == "live":
                 settings.TRADE_DAY = datetime.now().strftime("%Y-%m-%d")
                 self.market_snapshot.replay_date = settings.TRADE_DAY
 
+            # 1. Market Data Update
             realtime_data = await self._sync_market_data()
-            
             if '000001' in realtime_data:
                 idx = realtime_data['000001']
                 self.market_snapshot.index_price = idx['price']
@@ -162,36 +219,83 @@ class TradingSystem:
             
             self._update_valuations(realtime_data)
             self._calculate_metrics()
-            self.strategy_config = self.strategy_agent.adapt_config(self.strategy_config, self.metrics)
             
+            # 2. Strategy Adaptation
+            self.strategy_config = self.strategy_agent.adapt_config(self.strategy_config, self.metrics)
             if "Mode" in self.strategy_config.update_reason and self.events and self.events[-1].reason_text != self.strategy_config.update_reason:
                  self._log(EventType.STRATEGY_UPDATED, AgentType.STRATEGY, Decision.INFO, 
                            self.strategy_config.update_reason)
 
+            # 3. Exit Policy
             for pos in self.positions:
-                exit_intent = self.exit_policy.check_exit(pos, "sess_live", settings.TRADE_DAY)
+                exit_intent = self.exit_policy.check_exit(pos, settings.SESSION_ID, settings.TRADE_DAY)
                 if exit_intent:
-                    exit_intent.source.source_event_id = tick_event_id # Link to tick
+                    exit_intent.source.source_event_id = tick_event_id 
                     self._process_intent_lifecycle(exit_intent)
 
-            # Strategy Agent Run (Pass tick ID for traceability)
+            # 4. Strategy Agent Run
+            # Capture Observation BEFORE Agent runs (Input State)
+            current_observation = Observation(
+                market=self.market_snapshot,
+                account=self.account,
+                positions=self.positions,
+                intents_pending=[i for i in self.intents if i.status == OrderStatus.PENDING]
+            )
+
             new_intents = await self.strategy_agent.run_cycle(self.market_snapshot, realtime_data, self.strategy_config)
             
-            # Validation Agent: Pre-check Intents
+            # 5. Validation Agent
             valid_intents = []
+            step_violations = [] # Capture for TruthStore
+
             for i in new_intents:
-                i.source.source_event_id = tick_event_id # Link intent to this specific market tick
+                i.source.source_event_id = tick_event_id
                 is_valid, msg = validation_agent.validate_intent(i)
                 if is_valid:
                     valid_intents.append(i)
                 else:
+                    violation = {
+                        "rule": "ValidationAgent",
+                        "symbol": i.symbol,
+                        "details": msg,
+                        "time": event_time.isoformat()
+                    }
+                    step_violations.append(violation)
                     self._log(EventType.GUARD_BLOCKED, AgentType.RISK, Decision.BLOCK, f"Validation Failed: {msg}", 
                               symbol=i.symbol, correlation_id=i.correlation_id)
             
+            # 6. Intent Lifecycle & Execution
             for intent in valid_intents:
                 if any(i.symbol == intent.symbol and i.side == intent.side and i.status == OrderStatus.PENDING for i in self.intents):
                     continue
+                
+                # Check Guard (Capture violations)
+                receipt = self.guard.check(intent, self.account.filled_buys_today)
+                if receipt.decision == Decision.BLOCK:
+                     violation = {
+                        "rule": "TradeGuard",
+                        "symbol": intent.symbol,
+                        "details": receipt.reason_text,
+                        "time": event_time.isoformat()
+                    }
+                     step_violations.append(violation)
+                
                 self._process_intent_lifecycle(intent)
+
+            # 7. Record to TruthStore (Backend is Truth)
+            try:
+                await truth_store.record_step(
+                    episode_id=self.current_episode_id,
+                    step_index=self.step_index,
+                    timestamp=event_time,
+                    observation=current_observation.model_dump(),
+                    action=[i.model_dump() for i in new_intents] if new_intents else None,
+                    violations=step_violations,
+                    reward=self.account.day_pnl # Simple Reward Signal
+                )
+                self.step_index += 1
+            except Exception as e:
+                print(f"[TruthStore] Failed to record step: {e}")
 
             # Performance: Async save to prevent loop blocking
             asyncio.create_task(self._save_to_disk_async())
@@ -218,8 +322,14 @@ class TradingSystem:
 
         self.account.market_value = total_mv
         self.account.total_equity = self.account.available_cash + total_mv
-        self.account.day_pnl = self.account.total_equity - 100000.0 
-        self.account.day_pnl_pct = (self.account.day_pnl / 100000.0) * 100
+        
+        # FIX: Correct PnL Calculation
+        if self.initial_equity > 0:
+            self.account.day_pnl = self.account.total_equity - self.initial_equity
+            self.account.day_pnl_pct = (self.account.day_pnl / self.initial_equity) * 100
+        else:
+            self.account.day_pnl = 0
+            self.account.day_pnl_pct = 0
 
     def _process_intent_lifecycle(self, intent: TradeIntent):
         # P0: Idempotency Check
@@ -232,6 +342,14 @@ class TradingSystem:
         if receipt.decision == Decision.BLOCK:
             self._log(EventType.GUARD_BLOCKED, AgentType.RISK, Decision.BLOCK, 
                       f"Blocked: {receipt.reason_text}", symbol=intent.symbol, correlation_id=intent.correlation_id)
+            # Log Violation to TruthStore (Aggregated Episode Level)
+            if self.current_episode_id:
+                asyncio.create_task(truth_store.log_violation(self.current_episode_id, {
+                    "rule": "TradeGuard",
+                    "details": receipt.reason_text,
+                    "intent_id": intent.intent_id,
+                    "time": datetime.now().isoformat()
+                }))
             return
 
         intent.status = OrderStatus.PENDING
@@ -243,46 +361,49 @@ class TradingSystem:
         # Trace intent generation
         asyncio.create_task(scratchpad.log("INTENT_GENERATED", intent.model_dump()))
 
-    def submit_intent(self, intent: TradeIntent) -> bool:
+    async def submit_intent(self, intent: TradeIntent) -> bool:
         """
         Executed when Human approves a signal.
+        NOW ASYNC + LOCKED to prevent race conditions with tick().
         """
-        # P0: Strict Idempotency Check (Key based)
-        if intent.idempotency_key and intent.idempotency_key in self.processed_idempotency_keys:
-            print(f"WARN: Idempotency Key Replay {intent.idempotency_key}")
-            return False
+        async with self.lock:
+            # P0: Strict Idempotency Check (Key based)
+            if intent.idempotency_key and intent.idempotency_key in self.processed_idempotency_keys:
+                print(f"WARN: Idempotency Key Replay {intent.idempotency_key}")
+                return False
+                
+            if intent.intent_id in self.processed_ids:
+                print(f"WARN: Duplicate Intent ID {intent.intent_id}")
+                return False
             
-        if intent.intent_id in self.processed_ids:
-            print(f"WARN: Duplicate Intent ID {intent.intent_id}")
-            return False
-        
-        # Lock this operation
-        if intent.idempotency_key:
-            self.processed_idempotency_keys.add(intent.idempotency_key)
-        self.processed_ids.add(intent.intent_id)
-        
-        # P0: Order Loop Close - Must result in Filled or Rejected
-        receipt = self.guard.check(intent, self.account.filled_buys_today)
-        if receipt.decision == Decision.BLOCK:
-            self._log(EventType.ORDER_REJECTED, AgentType.RISK, Decision.BLOCK,
-                      f"Guard Blocked: {receipt.reason_text}", symbol=intent.symbol, correlation_id=intent.correlation_id)
-            return False
-        
-        existing = next((i for i in self.intents if i.intent_id == intent.intent_id), None)
-        if existing:
-            existing.status = OrderStatus.SUBMITTED
-        else:
-            intent.status = OrderStatus.SUBMITTED
-            self.intents.insert(0, intent)
-        
-        self._log(EventType.HUMAN_APPROVED, AgentType.EXECUTION, Decision.ALLOW, 
-                  f"Approved: {intent.side} {intent.symbol}", symbol=intent.symbol, correlation_id=intent.correlation_id)
-        
-        self._execute_trade(intent)
-        asyncio.create_task(self._save_to_disk_async())
-        return True
+            # Lock this operation
+            if intent.idempotency_key:
+                self.processed_idempotency_keys.add(intent.idempotency_key)
+            self.processed_ids.add(intent.intent_id)
+            
+            # P0: Order Loop Close - Must result in Filled or Rejected
+            receipt = self.guard.check(intent, self.account.filled_buys_today)
+            if receipt.decision == Decision.BLOCK:
+                self._log(EventType.ORDER_REJECTED, AgentType.RISK, Decision.BLOCK,
+                          f"Guard Blocked: {receipt.reason_text}", symbol=intent.symbol, correlation_id=intent.correlation_id)
+                return False
+            
+            existing = next((i for i in self.intents if i.intent_id == intent.intent_id), None)
+            if existing:
+                existing.status = OrderStatus.SUBMITTED
+            else:
+                intent.status = OrderStatus.SUBMITTED
+                self.intents.insert(0, intent)
+            
+            self._log(EventType.HUMAN_APPROVED, AgentType.EXECUTION, Decision.ALLOW, 
+                      f"Approved: {intent.side} {intent.symbol}", symbol=intent.symbol, correlation_id=intent.correlation_id)
+            
+            self._execute_trade(intent)
+            asyncio.create_task(self._save_to_disk_async())
+            return True
 
     def _execute_trade(self, intent: TradeIntent):
+        # NOTE: Called from within locked methods (submit_intent), so this is safe.
         costs = 5.0 
         fill_price = intent.price 
         
@@ -309,7 +430,6 @@ class TradingSystem:
                  realized_pnl_pct = (realized_pnl / (pos.average_cost * intent.qty)) * 100 if pos.average_cost > 0 else 0
                  
                  # ATTRIBUTION FIX: Use the Position's Entry Strategy ID, not the Exit Policy's ID
-                 # This ensures the original strategy gets the credit/blame in the Memory Store.
                  entry_strategy_id = pos.strategy_id if pos.strategy_id else "Manual"
                  
                  memory_service.record_trade(intent.symbol, "Unknown", settings.TRADE_DAY, realized_pnl_pct, intent.reason, entry_strategy_id)
@@ -332,40 +452,52 @@ class TradingSystem:
     async def _sync_market_data(self) -> Dict[str, Any]:
         position_symbols = [p.symbol for p in self.positions]
         watchlist_symbols = [w['symbol'] for w in self.strategy_agent.watchlist]
-        
+        all_symbols = list(set(position_symbols + watchlist_symbols + ['000001']))
+
         # If in Mock Mode, we need to generate data for ALL these symbols
         if settings.MODE != "live":
             data_map = {}
-            for sym in set(position_symbols + watchlist_symbols + ['000001']):
-                # Get last bar from history generator
-                bars = await market_data_service.get_history_bars(sym, days=1)
+            for sym in all_symbols:
+                # Get enough history to cover the full simulation range
+                bars = await market_data_service.get_history_bars(sym, days=1000)
                 if bars:
-                    last = bars[-1]
+                    # Find the bar for the current TRADE_DAY
+                    # If not found, fall back to the last available bar (to prevent crash, but warn)
+                    target_bar = next((b for b in bars if b['date'] == settings.TRADE_DAY), None)
+                    
+                    if not target_bar:
+                        target_bar = bars[-1]
+                        # Optional: Print warning if dates mismatch significantly
+                        # print(f"WARN: No data for {settings.TRADE_DAY}, using {target_bar['date']}")
+
                     data_map[sym] = {
                         "symbol": sym,
                         "name": "Mock " + sym,
-                        "price": last["close"],
+                        "price": target_bar["close"],
                         "change_pct": 0.0, # Could calculate diff from prev bar
-                        "volume": last["volume"]
+                        "volume": target_bar["volume"]
                     }
             return data_map
 
         # Live Mode
-        all_symbols = list(set(position_symbols + watchlist_symbols + ['000001']))
         return await sina_provider.get_realtime_data(all_symbols)
 
-    def cancel_order(self, intent_id: str):
-        for i in self.intents:
-            if i.intent_id == intent_id:
-                i.status = OrderStatus.CANCELLED
-                self._log(EventType.ORDER_REJECTED, AgentType.BROKER, Decision.INFO, "Cancelled by User", correlation_id=i.correlation_id)
-                asyncio.create_task(self._save_to_disk_async())
-                break
+    async def cancel_order(self, intent_id: str):
+        async with self.lock:
+            for i in self.intents:
+                if i.intent_id == intent_id:
+                    i.status = OrderStatus.CANCELLED
+                    self._log(EventType.ORDER_REJECTED, AgentType.BROKER, Decision.INFO, "Cancelled by User", correlation_id=i.correlation_id)
+                    asyncio.create_task(self._save_to_disk_async())
+                    break
 
-    def set_equity(self, amount: float):
-        self.account.total_equity = amount
-        self.account.available_cash = amount - self.account.market_value
-        asyncio.create_task(self._save_to_disk_async())
+    async def set_equity(self, amount: float):
+        async with self.lock:
+            self.initial_equity = amount # Update baseline
+            self.account.total_equity = amount
+            self.account.available_cash = amount - self.account.market_value
+            self._calculate_metrics() # Recalc PnL
+            asyncio.create_task(self._save_to_disk_async())
 
     async def run_experiments(self):
         """Triggered via API"""
@@ -405,7 +537,7 @@ class TradingSystem:
     def _log(self, type: str, agent: str, decision: str, text: str, symbol: str = None, correlation_id: str = None):
         evt = SystemEvent(
             trade_day=settings.TRADE_DAY,
-            session_id="sess_live",
+            session_id=settings.SESSION_ID,
             correlation_id=correlation_id,
             type=type, agent=agent, decision=decision, reason_text=text, symbol=symbol, severity=Severity.INFO,
             meta={"mode": settings.MODE}
@@ -418,6 +550,7 @@ class TradingSystem:
         """Run disk I/O in a thread to avoid blocking the event loop"""
         try:
             state = {
+                "initial_equity": self.initial_equity,
                 "account": self.account.model_dump(),
                 "positions": [p.model_dump() for p in self.positions],
                 "intents": [i.model_dump() for i in self.intents],
@@ -440,6 +573,7 @@ class TradingSystem:
             try:
                 with open(DATA_FILE, "r", encoding='utf-8') as f:
                     data = json.load(f)
+                if "initial_equity" in data: self.initial_equity = data["initial_equity"]
                 if "account" in data: self.account = AccountSummary(**data["account"])
                 if "positions" in data: self.positions = [Position(**p) for p in data["positions"]]
                 if "intents" in data: self.intents = [TradeIntent(**i) for i in data["intents"]]

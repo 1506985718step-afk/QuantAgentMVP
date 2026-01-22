@@ -196,7 +196,7 @@ async def set_watchlist(req: WatchlistSetRequest, current_user: UserInDB = Depen
 
 @app.post("/api/intent/approve")
 async def approve_intent(intent: TradeIntent, current_user: UserInDB = Depends(get_current_user)):
-    success = trading_system.submit_intent(intent)
+    success = await trading_system.submit_intent(intent) # NOW AWAIT
     if not success:
         raise HTTPException(status_code=400, detail="Guard blocked the trade")
     return {"status": "accepted", "intent_id": intent.intent_id}
@@ -207,12 +207,12 @@ async def reject_intent(intent_id: str, current_user: UserInDB = Depends(get_cur
 
 @app.post("/api/orders/cancel")
 async def cancel_order(intent_id: str, current_user: UserInDB = Depends(get_current_user)):
-    trading_system.cancel_order(intent_id)
+    await trading_system.cancel_order(intent_id) # NOW AWAIT
     return {"status": "cancelled"}
 
 @app.post("/api/account/equity")
 async def set_equity(req: EquityRequest, current_user: UserInDB = Depends(get_current_user)):
-    trading_system.set_equity(req.amount)
+    await trading_system.set_equity(req.amount) # NOW AWAIT
     return {"status": "updated"}
 
 @app.post("/api/audit/generate")
@@ -239,8 +239,10 @@ async def debug_next_day(current_user: UserInDB = Depends(get_current_user)):
     trading_system.positions = trading_system.engine.settle_overnight(trading_system.positions)
     trading_system.account.filled_buys_today = 0
     trading_system._log("DAILY_REPORT", "SYSTEM", "INFO", "Manual Next Day Triggered")
-    # Advance time if in Replay
-    # (Implementation detail: Ideally settings.TRADE_DAY is updated here based on calendar)
+    
+    # Close previous episode logic via reset/next logic would ideally be here or in system
+    # For now, relying on system's internal state tracking
+    
     await trading_system.generate_audit()
     return {"status": "ok"}
 
@@ -252,5 +254,5 @@ async def debug_tick(current_user: UserInDB = Depends(get_current_user)):
 @app.post("/api/simulation/reset")
 async def simulation_reset(req: SimulationResetRequest, current_user: UserInDB = Depends(get_current_user)):
     """Reset the entire system state for replay"""
-    trading_system.reset_state(initial_equity=req.initial_equity, trade_day=req.trade_day)
+    await trading_system.reset_state(initial_equity=req.initial_equity, trade_day=req.trade_day)
     return {"status": "reset", "current_state": trading_system.get_state()}

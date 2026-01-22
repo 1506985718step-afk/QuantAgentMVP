@@ -18,12 +18,24 @@ class ValidationAgent:
         Returns: (is_valid, parsed_data, error_msg)
         """
         try:
-            # Strip Markdown code blocks if present
+            # Robust JSON extraction
             clean_content = raw_content.strip()
-            if clean_content.startswith("```"):
+            
+            # Case 1: Wrapped in markdown code blocks
+            if "```" in clean_content:
+                # Find the first opening brace and last closing brace within the block if possible, 
+                # or just strip lines.
                 lines = clean_content.split('\n')
-                if len(lines) >= 3:
-                    clean_content = '\n'.join(lines[1:-1])
+                # Filter out lines starting with ```
+                lines = [line for line in lines if not line.strip().startswith("```")]
+                clean_content = '\n'.join(lines)
+            
+            # Case 2: Just raw text with surrounding noise. Find outermost braces.
+            start_idx = clean_content.find('{')
+            end_idx = clean_content.rfind('}')
+            
+            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                clean_content = clean_content[start_idx : end_idx+1]
             
             data = json.loads(clean_content)
             

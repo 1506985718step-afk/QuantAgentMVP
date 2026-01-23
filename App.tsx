@@ -171,17 +171,18 @@ const App: React.FC = () => {
         await activeBackend.removeFromWatchlist(symbol);
     };
 
-    const handleLoadSector = async (sectorName: string) => {
+    const handleLoadSector = (sectorName: string) => {
         const stocks = SECTORS[sectorName as keyof typeof SECTORS];
         
-        // Optimistically replace the watchlist view
-        await activeBackend.setWatchlist(stocks);
+        setShowSectorMenu(false); // Close immediately for better UX
+        
+        // Optimistically replace the watchlist view (Don't await to block UI)
+        activeBackend.setWatchlist(stocks);
         
         // Auto-select the first stock in the new sector for the chart
         if (stocks.length > 0) {
             setChartSymbol(stocks[0].symbol);
         }
-        setShowSectorMenu(false);
     };
 
     const handleSimPlay = () => !useRealBackend && (mockBackend as any).togglePlayback();

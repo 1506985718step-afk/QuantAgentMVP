@@ -11,14 +11,23 @@ services:
     volumes:
       - ./data_backup:/app/data
     environment:
-      - MODE=${MODE:-live}
+      # Application Mode
+      - MODE=${MODE:-mock}
       - TZ=Asia/Shanghai
+      
+      # Secrets (Use .env for actual values)
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
-      - SECRET_KEY=${SECRET_KEY}
+      - SECRET_KEY=${SECRET_KEY:-local_dev_secret}
+      
+      # Database Connection
       - DATABASE_URL=postgresql+asyncpg://${DB_USER:-quant}:${DB_PASSWORD:-password}@db:5432/${DB_NAME:-quant_db}
+      
+      # Admin Account
       - ADMIN_USER=${ADMIN_USER:-admin}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost}
+      
+      # CORS: Automatically handle localhost or custom domain
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost,https://localhost,http://127.0.0.1}
     depends_on:
       - db
     restart: unless-stopped
@@ -36,26 +45,50 @@ services:
     volumes:
       - ./pg_data:/var/lib/postgresql/data
       - ./backend/sql:/docker-entrypoint-initdb.d
-    ports:
-      - "5432:5432"
+    expose:
+      - "5432"
     restart: unless-stopped
     networks:
       - quant_net
 
-  # Nginx Frontend & Proxy
+  # Nginx Frontend (Internal Web Server)
   frontend:
     build:
       context: .
       dockerfile: frontend.Dockerfile
     container_name: quant_nginx
-    ports:
-      - "80:80"
+    expose:
+      - "80"
     depends_on:
       - backend
     restart: unless-stopped
     networks:
       - quant_net
 
+  # Caddy Gateway (Reverse Proxy)
+  caddy:
+    image: caddy:2-alpine
+    container_name: quant_gateway
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - DOMAIN_NAME=${DOMAIN_NAME:-localhost}
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - quant_net
+
 networks:
   quant_net:
     driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:

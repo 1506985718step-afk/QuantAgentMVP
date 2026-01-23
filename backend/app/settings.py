@@ -24,7 +24,18 @@ class Settings(BaseSettings):
     
     # Infrastructure
     REDIS_URL: Optional[str] = None
-    DATABASE_URL: str = "postgresql+asyncpg://quant:password@localhost:5432/quant_db"
+    
+    # DATABASE HANDLING
+    # We use a property to handle the asyncpg scheme fix for PaaS (Zeabur/Railway/Render)
+    _database_url: str = os.getenv("DATABASE_URL", "postgresql+asyncpg://quant:password@localhost:5432/quant_db")
+
+    @property
+    def DATABASE_URL(self) -> str:
+        url = self._database_url
+        # Fix for SQLAlchemy AsyncPG: ensure protocol is postgresql+asyncpg://
+        if url and url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+        return url
     
     # LLM Configuration
     DEEPSEEK_API_KEY: str = "sk-bddf5370bddf40ef844bc9637b1cdbe3"
@@ -72,5 +83,7 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        # Ignore extra fields to prevent errors when overriding DATABASE_URL via property
+        extra = "ignore"
 
 settings = Settings()

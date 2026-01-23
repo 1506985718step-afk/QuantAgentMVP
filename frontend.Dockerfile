@@ -13,7 +13,17 @@ RUN npm run build
 
 # Stage 2: Serve
 FROM nginx:alpine
+
+# Copy built assets
 COPY --from=builder /app/dist /usr/share/nginx/html
-COPY nginx/default.conf /etc/nginx/conf.d/default.conf
+
+# Copy Nginx Template
+# Nginx image automatically substitutes vars in /etc/nginx/templates/*.template 
+# and outputs to /etc/nginx/conf.d/default.conf
+COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
+
+# Default env var (can be overridden in Zeabur)
+ENV BACKEND_HOST=backend
+
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]

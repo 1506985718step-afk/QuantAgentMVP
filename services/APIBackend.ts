@@ -97,7 +97,7 @@ class APIBackendService {
             
             const data = await res.json();
             
-            // Merge with local state structure
+            // Merge with local state structure - Always create new object reference
             this.state = {
                 ...this.state,
                 ...data,
@@ -185,8 +185,15 @@ class APIBackendService {
     
     async setTotalEquity(amount: number) {
         // Optimistic Update for Mock Mode / Fast UI
-        this.state.account.total_equity = amount;
-        this.state.account.available_cash = amount - this.state.account.market_value;
+        // Use immutable update to trigger React re-render
+        this.state = {
+            ...this.state,
+            account: {
+                ...this.state.account,
+                total_equity: amount,
+                available_cash: amount - this.state.account.market_value
+            }
+        };
         this.notify();
 
         try {
@@ -208,7 +215,10 @@ class APIBackendService {
         // Optimistic
         const exists = this.state.watchlist.some(w => w.symbol === symbol);
         if (!exists) {
-            this.state.watchlist = [...this.state.watchlist, {symbol, name}];
+            this.state = {
+                ...this.state,
+                watchlist: [...this.state.watchlist, {symbol, name}]
+            };
             this.notify();
         }
 
@@ -227,7 +237,10 @@ class APIBackendService {
 
     async removeFromWatchlist(symbol: string) {
         // Optimistic
-        this.state.watchlist = this.state.watchlist.filter(w => w.symbol !== symbol);
+        this.state = {
+            ...this.state,
+            watchlist: this.state.watchlist.filter(w => w.symbol !== symbol)
+        };
         this.notify();
         try {
             await fetch(this.getUrl('watchlist/remove'), { 
@@ -243,8 +256,11 @@ class APIBackendService {
     }
 
     async setWatchlist(items: {symbol: string, name: string}[]) {
-        // Optimistic
-        this.state.watchlist = items;
+        // Optimistic - Use immutable update
+        this.state = {
+            ...this.state,
+            watchlist: items
+        };
         this.notify();
         try {
             await fetch(this.getUrl('watchlist/set'), {

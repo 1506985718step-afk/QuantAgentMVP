@@ -6,45 +6,49 @@ import hashlib
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
 from ..app.settings import settings
-from ..core.contracts import TradeIntent, Side, IntentType, IntentSource, IntentVersion, OrderStatus, StrategyConfig, TradeMetrics
+from ..core.contracts import TradeIntent, Side, IntentType, IntentSource, IntentVersion, OrderStatus, StrategyConfig, TradeMetrics, AgentProfile, AgentType
+from ..core.interfaces import BaseAgent
 from ..services.llm_service import LLMService
 from ..services.news_service import news_service
 from ..services.memory_service import memory_service
 from ..infra.scratchpad_store import scratchpad
 
-class StrategyAgent:
+class StrategyAgent(BaseAgent):
     def __init__(self):
         self.llm = LLMService()
-        # Initialize from Config Profile
         self.watchlist = list(settings.DEFAULT_WATCHLIST)
         self.cooldowns: Dict[str, datetime] = {}
-        self.last_scan_time = None
+        self.last_triggered = None
+
+    def get_profile(self) -> AgentProfile:
+        return AgentProfile(
+            agent_id="strategy_deepseek_v1",
+            type=AgentType.STRATEGY,
+            authority="READ_WRITE",
+            can_open_position=True,
+            can_close_position=False, # Only opens, ExitPolicy closes
+            last_triggered=self.last_triggered,
+            impact_score=0.8,
+            description="DeepSeek V3 powered momentum strategy agent"
+        )
 
     def get_watchlist(self) -> List[Dict[str, str]]:
         return self.watchlist
 
     def add_to_watchlist(self, symbol: str, name: str):
-        """Add a stock if it doesn't exist"""
         if not any(x['symbol'] == symbol for x in self.watchlist):
             self.watchlist.append({'symbol': symbol, 'name': name})
 
     def remove_from_watchlist(self, symbol: str):
-        """Remove a stock by symbol"""
         self.watchlist = [x for x in self.watchlist if x['symbol'] != symbol]
 
     def set_watchlist(self, items: List[Dict[str, str]]):
-        """Replace the entire watchlist"""
         self.watchlist = items
 
     def adapt_config(self, current_config: StrategyConfig, metrics: TradeMetrics) -> StrategyConfig:
-        """
-        Dynamically adjust strategy parameters based on recent performance.
-        Now uses Profiles from settings for boundaries.
-        """
         new_config = current_config.model_copy()
         now_str = datetime.now().isoformat()
         
-        # 1. DEFENSIVE MODE
         if metrics.max_drawdown > 0.05 or (metrics.total_trades > 5 and metrics.win_rate < 0.4):
             profile = settings.STRATEGY_PROFILES["conservative"]
             new_config.vol_threshold = profile["vol_threshold"]
@@ -54,7 +58,6 @@ class StrategyAgent:
             new_config.last_updated = now_str
             return new_config
 
-        # 2. AGGRESSIVE MODE
         if metrics.total_trades > 5 and metrics.win_rate > 0.6 and metrics.max_drawdown < 0.03:
             profile = settings.STRATEGY_PROFILES["aggressive"]
             new_config.vol_threshold = profile["vol_threshold"]
@@ -64,7 +67,6 @@ class StrategyAgent:
             new_config.last_updated = now_str
             return new_config
 
-        # 3. NEUTRAL MODE
         default = settings.STRATEGY_PROFILES["default"]
         if current_config.vol_threshold != default["vol_threshold"]:
             new_config.vol_threshold = default["vol_threshold"]
@@ -76,16 +78,10 @@ class StrategyAgent:
         return new_config
 
     async def run_cycle(self, market_snapshot: Any, market_data_map: Dict[str, Any], config: StrategyConfig) -> List[TradeIntent]:
-        """
-        Scan watchlist and return new intents (Async).
-        Parallelized LLM Analysis for performance.
-        """
         intents = []
         now = datetime.now()
         
-        # 0. Get Real-Time News Context
         latest_news = news_service.get_latest_news()
-
         candidates = []
         analysis_tasks = []
 
@@ -94,22 +90,16 @@ class StrategyAgent:
             name = item['name']
             
             data = market_data_map.get(symbol)
-            if not data:
-                continue
+            if not data: continue
 
             if symbol in self.cooldowns:
                 if now - self.cooldowns[symbol] < timedelta(minutes=30):
                     continue
 
-            # Deterministic/Mock Vol Ratio
             vol_ratio = 1.2 + (random.random() * 1.0) if data.get('volume', 0) > 0 else 0.0
             
-            # 1. Pre-filter using Dynamic Config
-            if vol_ratio < config.vol_threshold:
-                 continue
-
-            if data['change_pct'] < -3.0:
-                continue 
+            if vol_ratio < config.vol_threshold: continue
+            if data['change_pct'] < -3.0: continue 
             
             candidates.append({
                 "symbol": symbol,
@@ -118,12 +108,9 @@ class StrategyAgent:
                 "vol_ratio": vol_ratio
             })
 
-        # 2. Parallel LLM Analysis
         for c in candidates:
             past_lessons = memory_service.get_context(c["symbol"])
             
-            # Trace: Log Input to Scratchpad
-            # Using asyncio.create_task to not block strategy loop
             asyncio.create_task(scratchpad.log("LLM_INPUT", {
                 "symbol": c["symbol"],
                 "price": c["data"]['price'],
@@ -149,11 +136,8 @@ class StrategyAgent:
 
         results = await asyncio.gather(*analysis_tasks)
 
-        # 3. Process Results
         for i, analysis in enumerate(results):
             c = candidates[i]
-            
-            # Trace: Log Output to Scratchpad
             asyncio.create_task(scratchpad.log("LLM_OUTPUT", {
                 "symbol": c["symbol"],
                 "result": analysis
@@ -167,14 +151,12 @@ class StrategyAgent:
                 qty = raw_lots * 100
                 if qty == 0: qty = 100
 
-                # Traceability: Generate Hash for LLM decision
-                # Combine input factors + analysis output to create a "receipt"
                 trace_str = f"{c['symbol']}_{price}_{c['vol_ratio']}_{analysis.get('reasoning')}"
                 llm_hash = hashlib.sha256(trace_str.encode('utf-8')).hexdigest()[:16]
 
                 intent = TradeIntent(
                     intent_id=f"strat-{uuid.uuid4().hex[:8]}",
-                    correlation_id=f"trace-{uuid.uuid4().hex[:8]}", # Start of a new trace chain
+                    correlation_id=f"trace-{uuid.uuid4().hex[:8]}", 
                     llm_request_hash=llm_hash,
                     
                     trade_day=now.strftime("%Y-%m-%d"),
@@ -200,5 +182,6 @@ class StrategyAgent:
                 
                 intents.append(intent)
                 self.cooldowns[c["symbol"]] = now
+                self.last_triggered = now.isoformat()
                 
         return intents

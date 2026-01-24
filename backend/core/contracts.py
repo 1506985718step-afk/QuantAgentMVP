@@ -5,9 +5,6 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 import uuid
 
-# ... (Previous Enums remain unchanged, omitted for brevity, keeping only essential ones for context if needed, but assuming full file replacement usually) ...
-# Re-including required Enums/Classes for the full file replacement to work correctly.
-
 class Side(str, Enum):
     BUY = "BUY"
     SELL = "SELL"
@@ -51,6 +48,17 @@ class OrderStatus(str, Enum):
     CANCELLED = "CANCELLED"
     REJECTED = "REJECTED"
     DEFERRED = "DEFERRED"
+
+# Updated AgentProfile Structure
+class AgentProfile(BaseModel):
+    agent_id: str
+    type: AgentType
+    authority: str # e.g. "READ_ONLY", "FULL", "AUTO_SELL_ONLY", "BLOCK_ONLY"
+    can_open_position: bool
+    can_close_position: bool
+    last_triggered: Optional[str] = None
+    impact_score: float = 0.0 # e.g. PnL contribution or block count
+    description: str = ""
 
 class IntentSource(BaseModel):
     source_event_id: str
@@ -207,25 +215,19 @@ class GuardReceipt(BaseModel):
 # --- TruthStore Contracts (Constitution v0.1) ---
 
 class Observation(BaseModel):
-    """
-    Standardized Input Snapshot for a Step.
-    """
     market: MarketSnapshot
     account: AccountSummary
     positions: List[Position]
     intents_pending: List[TradeIntent]
 
 class StepRecord(BaseModel):
-    """
-    Standardized Step Record for DB.
-    """
     step_id: str
     episode_id: str
     step_index: int
-    timestamp: datetime # Event Time
-    ingested_at: datetime # Write Time
+    timestamp: datetime 
+    ingested_at: datetime 
     observation: Observation
     action: Optional[List[TradeIntent]]
-    guardrails: List[Dict[str, Any]] = [] # Now a List
-    violations: List[Dict[str, Any]] = [] # New
+    guardrails: List[Dict[str, Any]] = [] 
+    violations: List[Dict[str, Any]] = [] 
     reward: float

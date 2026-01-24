@@ -1,9 +1,11 @@
 
 from typing import Optional, Dict, Any
 import uuid
-from .contracts import Position, TradeIntent, Side, IntentType, IntentSource, IntentVersion
+from datetime import datetime
+from .contracts import Position, TradeIntent, Side, IntentType, IntentSource, IntentVersion, AgentProfile, AgentType
+from .interfaces import BaseAgent
 
-class ExitPolicy:
+class ExitPolicy(BaseAgent):
     """
     ExitPolicy-B (Trend Following Decision Tree).
     Rules:
@@ -15,26 +17,31 @@ class ExitPolicy:
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {
             "rule_version": "Exit-B-1.2",
-            
-            # 1. Hard Stop
             "stop_loss_pct": 3.0,
-            
-            # 2. Time Stop
             "time_stop_days": 1, 
-            "time_stop_threshold": 1.0, # If < 1% after 1 day, consider exit
-            
-            # 3. Trailing Stop (Trend Following)
-            "trailing_stop_activation_pct": 5.0, # Only activate after +5% profit
-            "trailing_drawdown_pct": 2.5,        # Sell if it drops 2.5% from peak
-            
+            "time_stop_threshold": 1.0,
+            "trailing_stop_activation_pct": 5.0,
+            "trailing_drawdown_pct": 2.5,
             "tp1_sell_ratio": 1.0,
         }
+        self.last_triggered = None
+
+    def get_profile(self) -> AgentProfile:
+        return AgentProfile(
+            agent_id="exit_policy_v1",
+            type=AgentType.EXIT,
+            authority="AUTO_SELL_ONLY",
+            can_open_position=False,
+            can_close_position=True,
+            last_triggered=self.last_triggered,
+            impact_score=-0.3, # Negative impact means selling/risk reduction
+            description="Exit Policy B: Trend Following + Hard Stop + Time Stop"
+        )
 
     def check_exit(self, position: Position, session_id: str, trade_day: str) -> Optional[TradeIntent]:
         """
         Evaluates position against the decision tree.
         """
-        # Unpack Config
         sl_threshold = self.config["stop_loss_pct"]
         time_limit = self.config["time_stop_days"]
         time_min_return = self.config["time_stop_threshold"]
@@ -44,9 +51,11 @@ class ExitPolicy:
         current_pnl = position.unrealized_pnl_pct
         max_pnl = position.max_pnl_pct
         
+        intent = None
+        
         # --- Rule 1: Hard Stop Loss ---
         if current_pnl <= -sl_threshold:
-             return self._create_intent(
+             intent = self._create_intent(
                  position, 
                  IntentType.STOP_LOSS_SELL, 
                  1.0, 
@@ -55,10 +64,8 @@ class ExitPolicy:
              )
 
         # --- Rule 2: Time Stop (T+1 Impatience) ---
-        # Note: 'days_held' increments overnight. 
-        # So days_held=1 means we bought yesterday.
-        if position.days_held >= time_limit and current_pnl < time_min_return:
-             return self._create_intent(
+        elif position.days_held >= time_limit and current_pnl < time_min_return:
+             intent = self._create_intent(
                  position,
                  IntentType.TIME_STOP_SELL,
                  1.0,
@@ -67,11 +74,10 @@ class ExitPolicy:
              )
 
         # --- Rule 3: Trailing Stop (Trend Reversal) ---
-        # Only if we reached activation threshold (e.g. +5%)
-        if max_pnl >= trailing_activation:
+        elif max_pnl >= trailing_activation:
             drawdown = max_pnl - current_pnl
             if drawdown >= trailing_drawdown:
-                return self._create_intent(
+                intent = self._create_intent(
                     position,
                     IntentType.TAKE_PROFIT_SELL,
                     1.0,
@@ -79,7 +85,10 @@ class ExitPolicy:
                     session_id, trade_day
                 )
 
-        return None
+        if intent:
+            self.last_triggered = datetime.now().isoformat()
+            
+        return intent
 
     def _create_intent(self, pos: Position, type: IntentType, ratio: float, reason: str, session_id: str, trade_day: str) -> TradeIntent:
         qty_to_sell = int(pos.quantity * ratio)

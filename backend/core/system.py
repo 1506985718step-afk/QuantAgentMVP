@@ -11,8 +11,9 @@ from ..app.settings import settings
 from .contracts import (
     AccountSummary, Position, TradeIntent, SystemEvent, MarketSnapshot,
     AgentType, Decision, Severity, EventType, Side, OrderStatus, StrategyConfig, AuditReport, TradeMetrics,
-    Observation
+    Observation, AgentProfile
 )
+from .interfaces import Orchestrator, BaseAgent
 from .trade_guard import TradeGuard
 from .execution_engine import ExecutionEngine
 from .exit_policy import ExitPolicy
@@ -28,13 +29,12 @@ from ..infra.truth_store import truth_store
 
 from ..services.llm_service import LLMService
 from ..services.memory_service import memory_service
-# Consolidated Market Data Import
 from ..services.market_data import market_data_service
 
 DATA_FILE = "data/state.json"
 MAX_EVENTS_HISTORY = 1000  
 
-class TradingSystem:
+class TradingSystem(Orchestrator):
     def __init__(self):
         # 0. System Safety
         self.lock = asyncio.Lock() # P1: Concurrency Safety
@@ -60,8 +60,21 @@ class TradingSystem:
         self.experiment_runner = ExperimentRunner(self)
         self.experiment_results: List[Dict] = []
         
+        # Agent Registry (Orchestrator Layer)
+        self.agents: Dict[str, BaseAgent] = {}
+        self.register_agent(self.strategy_agent)
+        self.register_agent(self.guard)
+        self.register_agent(self.exit_policy)
+        # Note: Validation/Refinement agents are currently static singletons, 
+        # but could be refactored to instances.
+        
         self._load_from_disk_sync() # Initial load is synchronous
     
+    def register_agent(self, agent: BaseAgent):
+        profile = agent.get_profile()
+        self.agents[profile.agent_id] = agent
+        print(f"[Orchestrator] Registered agent: {profile.agent_id} ({profile.type})")
+
     def _init_state(self):
         self.account = AccountSummary(
             total_equity=self.initial_equity, 
@@ -146,7 +159,8 @@ class TradingSystem:
             "metrics": self.metrics.model_dump(),
             "orders": [],
             "watchlist": self.strategy_agent.get_watchlist(),
-            "experiment_results": self.experiment_results
+            "experiment_results": self.experiment_results,
+            "agent_profiles": [a.get_profile().model_dump() for a in self.agents.values()] # Expose Agents
         }
 
     def _calculate_metrics(self):
@@ -193,6 +207,10 @@ class TradingSystem:
         print(f"[TruthStore] Closed Episode {self.current_episode_id}")
         self.current_episode_id = None
 
+    # Renamed/Aliased for Interface Compliance
+    async def run_tick_cycle(self) -> Dict[str, Any]:
+        return await self.tick()
+
     async def tick(self):
         async with self.lock:
             # Ensure Episode Exists
@@ -210,7 +228,7 @@ class TradingSystem:
                 settings.TRADE_DAY = datetime.now().strftime("%Y-%m-%d")
                 self.market_snapshot.replay_date = settings.TRADE_DAY
 
-            # 1. Market Data Update
+            # 1. Market Data Phase
             realtime_data = await self._sync_market_data()
             if '000001' in realtime_data:
                 idx = realtime_data['000001']
@@ -220,20 +238,20 @@ class TradingSystem:
             self._update_valuations(realtime_data)
             self._calculate_metrics()
             
-            # 2. Strategy Adaptation
+            # 2. Adaptation Phase (Refinement Agent)
             self.strategy_config = self.strategy_agent.adapt_config(self.strategy_config, self.metrics)
             if "Mode" in self.strategy_config.update_reason and self.events and self.events[-1].reason_text != self.strategy_config.update_reason:
                  self._log(EventType.STRATEGY_UPDATED, AgentType.STRATEGY, Decision.INFO, 
                            self.strategy_config.update_reason)
 
-            # 3. Exit Policy
+            # 3. Exit Phase (Exit Policy Agent)
             for pos in self.positions:
                 exit_intent = self.exit_policy.check_exit(pos, settings.SESSION_ID, settings.TRADE_DAY)
                 if exit_intent:
                     exit_intent.source.source_event_id = tick_event_id 
                     self._process_intent_lifecycle(exit_intent)
 
-            # 4. Strategy Agent Run
+            # 4. Strategy Phase (Strategy Agent)
             # Capture Observation BEFORE Agent runs (Input State)
             current_observation = Observation(
                 market=self.market_snapshot,
@@ -244,7 +262,7 @@ class TradingSystem:
 
             new_intents = await self.strategy_agent.run_cycle(self.market_snapshot, realtime_data, self.strategy_config)
             
-            # 5. Validation Agent
+            # 5. Validation Phase (Validation Agent)
             valid_intents = []
             step_violations = [] # Capture for TruthStore
 
@@ -264,7 +282,7 @@ class TradingSystem:
                     self._log(EventType.GUARD_BLOCKED, AgentType.RISK, Decision.BLOCK, f"Validation Failed: {msg}", 
                               symbol=i.symbol, correlation_id=i.correlation_id)
             
-            # 6. Intent Lifecycle & Execution
+            # 6. Execution Phase (Guard + Engine)
             for intent in valid_intents:
                 if any(i.symbol == intent.symbol and i.side == intent.side and i.status == OrderStatus.PENDING for i in self.intents):
                     continue
@@ -448,6 +466,11 @@ class TradingSystem:
         
         self._log(EventType.ORDER_FILLED, AgentType.BROKER, Decision.EXECUTE, 
                   f"Filled {intent.side} {intent.qty} @ {fill_price}", symbol=intent.symbol, correlation_id=intent.correlation_id)
+                  
+        # New: Post-Trade Validation Event
+        self._log(EventType.POST_TRADE_VALIDATION, AgentType.AUDIT, Decision.INFO,
+                  f"Trade Executed & Validated. Remaining Cash: {self.account.available_cash:.2f}", 
+                  symbol=intent.symbol, correlation_id=intent.correlation_id)
 
     async def _sync_market_data(self) -> Dict[str, Any]:
         position_symbols = [p.symbol for p in self.positions]

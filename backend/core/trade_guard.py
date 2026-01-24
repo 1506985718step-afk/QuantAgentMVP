@@ -1,8 +1,11 @@
-from typing import Tuple
-from .contracts import TradeIntent, Decision, IntentType, Side, AgentType, GuardReceipt, EventSnapshots
-from .events import GUARD_BLOCKED, GUARD_CHECKED
 
-class TradeGuard:
+from typing import Tuple, Optional
+from datetime import datetime
+from .contracts import TradeIntent, Decision, IntentType, Side, AgentType, GuardReceipt, EventSnapshots, AgentProfile
+from .events import GUARD_BLOCKED, GUARD_CHECKED
+from .interfaces import BaseAgent
+
+class TradeGuard(BaseAgent):
     """
     Hard-coded risk rules. 
     Rule 1: Only block BUYs. SELLs are escape hatches.
@@ -12,8 +15,22 @@ class TradeGuard:
     def __init__(self, max_daily_buys: int = 5):
         self.max_daily_buys = max_daily_buys
         self.rule_version = "1.0.0"
+        self.last_triggered = None
+
+    def get_profile(self) -> AgentProfile:
+        return AgentProfile(
+            agent_id="trade_guard_v1",
+            type=AgentType.RISK,
+            authority="BLOCK_ONLY",
+            can_open_position=False,
+            can_close_position=False,
+            last_triggered=self.last_triggered,
+            impact_score=0.0,
+            description="Static Risk Guard: Max Daily Buys & Anti-Fat Finger"
+        )
 
     def check(self, intent: TradeIntent, filled_buys_today: int) -> GuardReceipt:
+        self.last_triggered = datetime.now().isoformat()
         
         # Base Snapshot for evidence
         snapshots = EventSnapshots(
